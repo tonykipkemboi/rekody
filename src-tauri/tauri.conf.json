@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/packages/api/schema.json",
   "productName": "Chamgei",
   "version": "0.1.0",
-  "identifier": "com.chamgei.app",
+  "identifier": "com.chamgei.voice",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
