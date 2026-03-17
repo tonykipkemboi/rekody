@@ -2,12 +2,14 @@
 //!
 //! Guides new users through provider selection, API key entry,
 //! Whisper model download, and macOS permission checks.
+//! Uses `cliclack` for a beautiful interactive CLI experience.
 
-use std::io::{self, BufRead, Write as _};
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use cliclack::{confirm, input, intro, outro, select, spinner};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -58,215 +60,151 @@ pub fn needs_onboarding() -> bool {
 /// Walks the user through provider selection, API key entry, Whisper model
 /// download, macOS permission guidance, and config file creation.
 pub fn run_onboarding() -> Result<()> {
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
+    // --- Header -----------------------------------------------------------
+    intro("chamgei v0.1.0").map_err(|e| anyhow::anyhow!(e))?;
 
-    println!();
-    println!("╔══════════════════════════════════════════════╗");
-    println!("║   Welcome to Chamgei - Voice Dictation       ║");
-    println!("║   First-time setup                           ║");
-    println!("╚══════════════════════════════════════════════╝");
-    println!();
-    println!("This wizard will help you configure Chamgei.");
-    println!("It only takes a minute.");
-    println!();
+    // --- Step 1: LLM provider --------------------------------------------
+    let provider: &str = select("Choose your LLM provider")
+        .item("groq", "Groq", "recommended — free tier, ultra-fast")
+        .item("cerebras", "Cerebras", "wafer-scale inference")
+        .item("together", "Together AI", "wide model selection")
+        .item("openrouter", "OpenRouter", "multi-provider routing")
+        .item("openai", "OpenAI", "GPT models")
+        .item("anthropic", "Anthropic", "Claude models")
+        .item("gemini", "Google Gemini", "Gemini Flash")
+        .item("ollama", "Ollama", "local, no API key needed")
+        .item("custom", "Custom endpoint", "any OpenAI-compatible API")
+        .interact()
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-    // --- Step 1: LLM provider ------------------------------------------------
-    println!("─── Step 1: Choose your LLM provider ───");
-    println!();
-    println!("Chamgei uses an LLM to clean up and format transcriptions.");
-    println!("Pick a provider (you can change this later in the config).");
-    println!();
-    println!("  1) Groq        (recommended - free tier, fast)");
-    println!("  2) Cerebras");
-    println!("  3) Together");
-    println!("  4) OpenRouter");
-    println!("  5) OpenAI");
-    println!("  6) Anthropic");
-    println!("  7) Gemini");
-    println!("  8) Ollama      (local, no API key needed)");
-    println!("  9) Custom endpoint");
-    println!();
+    let provider_name = provider;
 
-    let choice = prompt_choice(&mut lines, "Enter a number [1-9]", 1, 9, 1)?;
-
-    let (provider_name, default_model, needs_key) = match choice {
-        1 => ("groq", "openai/gpt-oss-20b", true),
-        2 => ("cerebras", "llama3.1-8b", true),
-        3 => ("together", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", true),
-        4 => ("openrouter", "meta-llama/llama-3.1-8b-instruct:free", true),
-        5 => ("openai", "gpt-4o-mini", true),
-        6 => ("anthropic", "claude-sonnet-4-20250514", true),
-        7 => ("gemini", "gemini-2.0-flash", true),
-        8 => ("ollama", "llama3.2:3b", false),
-        9 => ("custom", "my-model", true),
-        _ => unreachable!(),
+    let default_model = match provider_name {
+        "groq" => "openai/gpt-oss-20b",
+        "cerebras" => "llama3.1-8b",
+        "together" => "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+        "openrouter" => "meta-llama/llama-3.1-8b-instruct:free",
+        "openai" => "gpt-4o-mini",
+        "anthropic" => "claude-sonnet-4-20250514",
+        "gemini" => "gemini-2.0-flash",
+        "ollama" => "llama3.2:3b",
+        "custom" => "my-model",
+        _ => "my-model",
     };
 
-    // --- Custom base URL (only for option 9) ---------------------------------
-    let mut custom_base_url: Option<String> = None;
-    if choice == 9 {
-        println!();
-        print!("Enter the base URL for your custom endpoint: ");
-        io::stdout().flush()?;
-        let url = read_line(&mut lines)?;
-        if !url.is_empty() {
-            custom_base_url = Some(url);
-        }
-    }
+    let needs_key = provider_name != "ollama";
 
-    // --- API key -------------------------------------------------------------
-    let api_key = if needs_key {
-        println!();
-        print!("Enter your {} API key: ", provider_name);
-        io::stdout().flush()?;
-        let key = read_line(&mut lines)?;
-        if key.is_empty() {
-            println!("  (No key entered - you can add it later in ~/.config/chamgei/config.toml)");
-        }
-        key
+    // --- API key ---------------------------------------------------------
+    let api_key: String = if needs_key {
+        input("Enter your API key")
+            .placeholder("sk-...")
+            .interact()
+            .map_err(|e| anyhow::anyhow!(e))?
     } else {
-        println!();
-        println!("  No API key needed for {}.", provider_name);
         String::new()
     };
 
-    // --- Model ---------------------------------------------------------------
-    println!();
-    print!(
-        "Which model? [default: {}]: ",
-        default_model
-    );
-    io::stdout().flush()?;
-    let model_input = read_line(&mut lines)?;
-    let model = if model_input.is_empty() {
-        default_model.to_string()
+    // --- Model name ------------------------------------------------------
+    let model: String = input("Model name")
+        .default_input(default_model)
+        .placeholder(default_model)
+        .interact()
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // --- Custom base URL -------------------------------------------------
+    let custom_base_url: Option<String> = if provider_name == "custom" {
+        let url: String = input("API base URL")
+            .placeholder("https://...")
+            .interact()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if url.is_empty() { None } else { Some(url) }
     } else {
-        model_input
+        None
     };
 
-    // --- Step 2: Whisper model -----------------------------------------------
-    println!();
-    println!("─── Step 2: Choose Whisper model size ───");
-    println!();
-    println!("This model runs locally for speech-to-text.");
-    println!();
-    println!("  1) tiny    (~75 MB,  fastest,  good enough for most use)");
-    println!("  2) small   (~250 MB, balanced)");
-    println!("  3) medium  (~750 MB, better accuracy)");
-    println!("  4) large   (~1.5 GB, best accuracy)");
-    println!();
+    // --- Step 2: Whisper model -------------------------------------------
+    let whisper_size: &str = select("Choose Whisper model")
+        .item("tiny", "Tiny (75 MB)", "fastest — good for most use")
+        .item("small", "Small (250 MB)", "balanced")
+        .item("medium", "Medium (750 MB)", "better accuracy")
+        .item("large", "Large (1.5 GB)", "best accuracy")
+        .interact()
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-    let whisper_choice = prompt_choice(&mut lines, "Enter a number [1-4]", 1, 4, 1)?;
-
-    let (whisper_size, whisper_file, whisper_url) = match whisper_choice {
-        1 => (
-            "tiny",
+    let (whisper_file, whisper_url) = match whisper_size {
+        "tiny" => (
             "ggml-tiny.en.bin",
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
         ),
-        2 => (
-            "small",
+        "small" => (
             "ggml-small.en.bin",
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
         ),
-        3 => (
-            "medium",
+        "medium" => (
             "ggml-medium.en.bin",
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
         ),
-        4 => (
-            "large",
+        "large" => (
             "ggml-large.bin",
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large.bin",
         ),
-        _ => unreachable!(),
+        _ => (
+            "ggml-tiny.en.bin",
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+        ),
     };
 
-    // Download model if not present.
+    // --- Download model --------------------------------------------------
     let model_dir = resolve_model_dir();
     let model_path = model_dir.join(whisper_file);
 
     if model_path.exists() {
-        println!();
-        println!("  Model already downloaded at {}", model_path.display());
+        let sp = spinner();
+        sp.start("Checking Whisper model...");
+        sp.stop(format!("Model already downloaded at {}", model_path.display()));
     } else {
-        println!();
-        println!("  Downloading {} model...", whisper_size);
-        println!("  URL: {}", whisper_url);
-        println!("  Destination: {}", model_path.display());
-        println!();
-
         std::fs::create_dir_all(&model_dir)
             .context("failed to create model directory")?;
 
-        let status = Command::new("curl")
-            .args([
-                "-fSL",
-                "--progress-bar",
-                "-o",
-                model_path.to_str().unwrap_or("model.bin"),
-                whisper_url,
-            ])
-            .status()
-            .context("failed to run curl — is it installed?")?;
-
-        if !status.success() {
-            anyhow::bail!(
-                "Model download failed (exit code {:?}). \
-                 You can download it manually:\n  curl -fSL -o {} {}",
-                status.code(),
-                model_path.display(),
-                whisper_url
-            );
-        }
-
-        println!("  Download complete.");
+        download_model(whisper_url, &model_path)
+            .context("failed to download Whisper model")?;
 
         // Verify checksum (warning only — does not block).
         let expected = expected_checksum_for(whisper_file);
         verify_model_checksum(model_path.to_str().unwrap_or(""), expected);
     }
 
-    // --- Step 3: macOS permissions -------------------------------------------
-    println!();
-    println!("─── Step 3: macOS permissions ───");
-    println!();
-    println!("Chamgei needs two macOS permissions to work:");
-    println!();
-    println!("  1. Microphone access — so it can hear you.");
-    println!("     Go to: System Settings > Privacy & Security > Microphone");
-    println!("     Make sure your terminal app (or Chamgei.app) is enabled.");
-    println!();
-    println!("  2. Accessibility access — so it can type text into other apps.");
-    println!("     Go to: System Settings > Privacy & Security > Accessibility");
-    println!("     Add your terminal app (or Chamgei.app) to the list.");
-    println!();
-
-    // Quick check: try to detect if accessibility is enabled.
-    // This uses the macOS `tccutil` indirectly — we just remind the user.
+    // --- Step 3: macOS permissions ---------------------------------------
     #[cfg(target_os = "macos")]
     {
-        // Try to open System Settings to the right pane.
-        print!("Open System Settings to Accessibility now? [Y/n]: ");
-        io::stdout().flush()?;
-        let open_prefs = read_line(&mut lines)?;
-        if open_prefs.is_empty() || open_prefs.to_lowercase().starts_with('y') {
+        let open_prefs: bool = confirm("Open System Settings to grant Accessibility permissions?")
+            .initial_value(true)
+            .interact()
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        if open_prefs {
             let _ = Command::new("open")
                 .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
                 .status();
         }
+
+        let _: bool = confirm("Open System Settings to grant Microphone permissions?")
+            .initial_value(true)
+            .interact()
+            .map_err(|e| anyhow::anyhow!(e))
+            .and_then(|open_mic| {
+                if open_mic {
+                    let _ = Command::new("open")
+                        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+                        .status();
+                }
+                Ok(open_mic)
+            })?;
     }
 
-    println!();
-    print!("Press Enter once you have granted both permissions...");
-    io::stdout().flush()?;
-    let _ = read_line(&mut lines);
-
-    // --- Step 4: Write config ------------------------------------------------
-    println!();
-    println!("─── Step 4: Writing configuration ───");
-    println!();
+    // --- Step 4: Write config --------------------------------------------
+    let sp = spinner();
+    sp.start("Writing configuration...");
 
     let config_dir = config_dir().context("could not determine config directory")?;
     let config_path = config_dir.join("config.toml");
@@ -311,25 +249,74 @@ model = "{model}"
         let _ = std::fs::set_permissions(&config_path, perms);
     }
 
-    println!("  Config written to {}", config_path.display());
+    sp.stop(format!("Config written to {}", config_path.display()));
 
-    // --- Done ----------------------------------------------------------------
-    println!();
-    println!("╔══════════════════════════════════════════════╗");
-    println!("║   Setup complete!                            ║");
-    println!("╚══════════════════════════════════════════════╝");
-    println!();
-    println!("  Hotkeys:");
-    println!("    Fn (hold)        push-to-talk dictation");
-    println!("    Fn + Space       hands-free toggle (start/stop)");
-    println!("    Fn + Enter       command mode (transform selected text)");
-    println!();
-    println!("  Config location:   {}", config_path.display());
-    println!("  Model location:    {}", model_path.display());
-    println!();
-    println!("  To reconfigure, edit the config file or delete it and relaunch.");
-    println!();
+    // --- Summary & Done --------------------------------------------------
+    let summary = format!(
+        "Setup complete! Run 'chamgei' to start dictating.\n\
+         \n  Provider:   {provider}\
+         \n  Model:      {model}\
+         \n  Whisper:    {whisper} ({whisper_file})\
+         \n  Config:     {config}\
+         \n  Model dir:  {model_dir}",
+        provider = provider_name,
+        model = model,
+        whisper = whisper_size,
+        whisper_file = whisper_file,
+        config = config_path.display(),
+        model_dir = model_path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+    );
 
+    outro(summary).map_err(|e| anyhow::anyhow!(e))?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Model download with progress bar
+// ---------------------------------------------------------------------------
+
+/// Download a file from `url` to `dest` using reqwest with an indicatif progress bar.
+fn download_model(url: &str, dest: &std::path::Path) -> Result<()> {
+    let response = reqwest::blocking::get(url)
+        .context("failed to start model download")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "Model download failed with HTTP status {}. \
+             You can download it manually:\n  curl -fSL -o {} {}",
+            response.status(),
+            dest.display(),
+            url
+        );
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let pb = indicatif::ProgressBar::new(total);
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(
+            "  {bar:40.cyan/blue} {percent}% \u{b7} {bytes}/{total_bytes} \u{b7} {bytes_per_sec} \u{b7} ETA {eta}",
+        )
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+        .progress_chars("\u{2588}\u{2593}\u{2591}"),
+    );
+
+    let mut file = std::fs::File::create(dest)
+        .context("failed to create model file")?;
+
+    let mut reader = std::io::BufReader::new(response);
+    let mut buf = [0u8; 8192];
+    loop {
+        use std::io::Read;
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])?;
+        pb.inc(n as u64);
+    }
+
+    pb.finish_and_clear();
     Ok(())
 }
 
@@ -469,35 +456,4 @@ fn has_any_provider(config: &crate::ChamgeiConfig) -> bool {
         return true;
     }
     false
-}
-
-/// Read a single line from the iterator, trimming whitespace.
-fn read_line(lines: &mut impl Iterator<Item = io::Result<String>>) -> Result<String> {
-    match lines.next() {
-        Some(Ok(line)) => Ok(line.trim().to_string()),
-        Some(Err(e)) => Err(e.into()),
-        None => Ok(String::new()),
-    }
-}
-
-/// Prompt the user for a numeric choice in `[min, max]`, with a default.
-fn prompt_choice(
-    lines: &mut impl Iterator<Item = io::Result<String>>,
-    prompt: &str,
-    min: u32,
-    max: u32,
-    default: u32,
-) -> Result<u32> {
-    loop {
-        print!("{} (default {}): ", prompt, default);
-        io::stdout().flush()?;
-        let input = read_line(lines)?;
-        if input.is_empty() {
-            return Ok(default);
-        }
-        match input.parse::<u32>() {
-            Ok(n) if n >= min && n <= max => return Ok(n),
-            _ => println!("  Please enter a number between {} and {}.", min, max),
-        }
-    }
 }

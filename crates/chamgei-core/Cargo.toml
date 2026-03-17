@@ -19,6 +19,10 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 dirs = "6"
+cliclack = "0.3"
+indicatif = "0.17"
+console = "0.15"
+reqwest = { workspace = true, features = ["blocking"] }
 
 [[bin]]
 name = "chamgei"
