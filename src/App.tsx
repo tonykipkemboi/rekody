@@ -1427,20 +1427,25 @@ function InferenceTab({ settings, update }: TabProps) {
         </Section>
       )}
 
-      <Section title="Whisper Model">
-        <Select
-          value={settings.whisperModel}
-          onChange={(v) =>
-            update("whisperModel", v as Settings["whisperModel"])
-          }
-          options={[
-            { value: "tiny", label: "Tiny — fastest, least accurate" },
-            { value: "small", label: "Small — balanced (recommended)" },
-            { value: "medium", label: "Medium — slower, more accurate" },
-            { value: "large", label: "Large — slowest, most accurate" },
-          ]}
-        />
-      </Section>
+      {settings.sttEngine === "local" && (
+        <Section title="Local Model">
+          <Select
+            value={settings.whisperModel}
+            onChange={(v) =>
+              update("whisperModel", v as Settings["whisperModel"])
+            }
+            options={[
+              { value: "tiny", label: "Whisper Tiny (75 MB) — fastest" },
+              { value: "small", label: "Whisper Small (250 MB) — balanced" },
+              { value: "medium", label: "Whisper Medium (750 MB) — accurate" },
+              { value: "large", label: "Whisper Large (1.5 GB) — most accurate" },
+            ]}
+          />
+          <p className="mt-2 text-xs text-[var(--text-secondary)]">
+            Runs on-device with Metal GPU. Audio never leaves your Mac.
+          </p>
+        </Section>
+      )}
     </div>
   );
 }
