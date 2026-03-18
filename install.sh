@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-VERSION="v0.1.0"
+VERSION="v0.3.0"
 GITHUB_REPO="tonykipkemboi/chamgei"
 INSTALL_DIR="/usr/local/bin"
 MODEL_DIR="$HOME/.local/share/chamgei/models"

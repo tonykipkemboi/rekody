@@ -139,6 +139,12 @@ impl History {
                 if let Err(e) = std::fs::write(&path, &json) {
                     tracing::warn!(error = %e, "failed to save history");
                 } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let perms = std::fs::Permissions::from_mode(0o600);
+                        let _ = std::fs::set_permissions(&path, perms);
+                    }
                     tracing::debug!(?path, entries = self.entries.len(), "saved transcription history");
                 }
             }

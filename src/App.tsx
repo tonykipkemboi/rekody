@@ -17,7 +17,7 @@ interface HistoryEntry {
 interface Settings {
   activationMode: "push_to_talk" | "toggle";
   sttEngine: "local" | "groq" | "deepgram";
-  llmProvider: "cerebras" | "groq" | "local";
+  llmProvider: string;
   groqApiKey: string;
   cerebrasApiKey: string;
   deepgramApiKey: string;
@@ -29,12 +29,12 @@ interface Settings {
 const defaultSettings: Settings = {
   activationMode: "push_to_talk",
   sttEngine: "local",
-  llmProvider: "cerebras",
+  llmProvider: "groq",
   groqApiKey: "",
   deepgramApiKey: "",
   cerebrasApiKey: "",
-  whisperModel: "small",
-  vadThreshold: 0.5,
+  whisperModel: "tiny",
+  vadThreshold: 0.01,
   injectionMethod: "clipboard",
 };
 
@@ -1258,6 +1258,8 @@ function AllSetStep({
 function SettingsApp() {
   const [activeTab, setActiveTab] = useState<Tab>("general");
   const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "general", label: "General" },
@@ -1267,8 +1269,52 @@ function SettingsApp() {
     { id: "history", label: "History" },
   ];
 
+  // Load config from disk on mount
+  useEffect(() => {
+    invoke<string>("load_config_json").then((json) => {
+      try {
+        const config = JSON.parse(json);
+        setSettings({
+          activationMode: config.activation_mode || "push_to_talk",
+          sttEngine: config.stt_engine || "local",
+          llmProvider: config.providers?.[0]?.name || config.llm_provider || "local",
+          groqApiKey: "",
+          cerebrasApiKey: "",
+          deepgramApiKey: "",
+          whisperModel: config.whisper_model || "tiny",
+          vadThreshold: config.vad_threshold ?? 0.01,
+          injectionMethod: config.injection_method || "clipboard",
+        });
+      } catch {
+        // keep defaults
+      }
+    });
+  }, []);
+
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+    setSaveStatus("idle");
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    setSaveStatus("idle");
+    try {
+      const toml = `activation_mode = "${settings.activationMode}"
+whisper_model = "${settings.whisperModel}"
+vad_threshold = ${settings.vadThreshold}
+injection_method = "${settings.injectionMethod}"
+stt_engine = "${settings.sttEngine}"
+llm_provider = "${settings.llmProvider}"
+`;
+      await invoke("save_config", { config: toml });
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch {
+      setSaveStatus("error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1312,6 +1358,25 @@ function SettingsApp() {
         {activeTab === "hotkeys" && <HotkeysTab />}
         {activeTab === "history" && <HistoryTab />}
       </main>
+
+      {/* Save button */}
+      {activeTab !== "history" && (
+        <footer className="px-5 py-3 bg-[var(--bg-secondary)] border-t border-[var(--border)] flex items-center gap-3">
+          <button
+            onClick={saveSettings}
+            disabled={saving}
+            className="px-5 py-2 text-sm font-medium rounded bg-[var(--accent)] text-white hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+          {saveStatus === "saved" && (
+            <span className="text-xs text-green-400">Settings saved</span>
+          )}
+          {saveStatus === "error" && (
+            <span className="text-xs text-red-400">Failed to save</span>
+          )}
+        </footer>
+      )}
     </div>
   );
 }
@@ -1512,6 +1577,12 @@ function InferenceTab({ settings, update }: TabProps) {
           options={[
             { value: "groq", label: "Groq" },
             { value: "cerebras", label: "Cerebras" },
+            { value: "together", label: "Together AI" },
+            { value: "openrouter", label: "OpenRouter" },
+            { value: "openai", label: "OpenAI" },
+            { value: "anthropic", label: "Anthropic" },
+            { value: "gemini", label: "Google Gemini" },
+            { value: "ollama", label: "Ollama (local)" },
             { value: "local", label: "None (raw transcription)" },
           ]}
         />
@@ -1526,6 +1597,36 @@ function InferenceTab({ settings, update }: TabProps) {
       {(settings.llmProvider === "groq" || settings.sttEngine === "groq") && (
         <Section title="Groq API Key">
           <ApiKeyField provider="groq" placeholder="gsk_..." />
+        </Section>
+      )}
+
+      {settings.llmProvider === "openai" && (
+        <Section title="OpenAI API Key">
+          <ApiKeyField provider="openai" placeholder="sk-..." />
+        </Section>
+      )}
+
+      {settings.llmProvider === "anthropic" && (
+        <Section title="Anthropic API Key">
+          <ApiKeyField provider="anthropic" placeholder="sk-ant-..." />
+        </Section>
+      )}
+
+      {settings.llmProvider === "together" && (
+        <Section title="Together AI API Key">
+          <ApiKeyField provider="together" placeholder="tok-..." />
+        </Section>
+      )}
+
+      {settings.llmProvider === "openrouter" && (
+        <Section title="OpenRouter API Key">
+          <ApiKeyField provider="openrouter" placeholder="sk-or-..." />
+        </Section>
+      )}
+
+      {settings.llmProvider === "gemini" && (
+        <Section title="Google Gemini API Key">
+          <ApiKeyField provider="gemini" placeholder="AI..." />
         </Section>
       )}
 
@@ -1585,14 +1686,17 @@ function HotkeysTab() {
       <Section title="Dictation Hotkey">
         <div className="flex items-center gap-3">
           <kbd className="px-4 py-2 rounded bg-[var(--input-bg)] border border-[var(--border)] text-sm font-mono text-[var(--accent)]">
-            Ctrl + Shift + Space
+            Fn
           </kbd>
-          <button className="px-3 py-1.5 text-xs rounded bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors cursor-pointer">
-            Change
+          <button
+            disabled
+            className="px-3 py-1.5 text-xs rounded bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-secondary)] opacity-50 cursor-not-allowed"
+          >
+            Coming soon
           </button>
         </div>
         <p className="mt-2 text-xs text-[var(--text-secondary)]">
-          Hotkey customization coming soon.
+          Press and hold the Fn key to record, release to stop. Custom hotkeys coming soon.
         </p>
       </Section>
     </div>

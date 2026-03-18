@@ -408,7 +408,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chamgei-audio"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "chamgei-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chamgei-audio",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "chamgei-hotkey"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "rdev",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "chamgei-inject"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "chamgei-llm"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "chamgei-stt"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "chamgei-tauri"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "chamgei-core",
@@ -512,6 +512,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-shell",
  "tokio",
+ "toml 0.8.2",
  "tracing",
 ]
 
@@ -2309,9 +2310,12 @@ version = "3.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
 dependencies = [
+ "byteorder",
+ "linux-keyutils",
  "log",
  "security-framework 2.11.1",
  "security-framework 3.7.0",
+ "windows-sys 0.60.2",
  "zeroize",
 ]
 
@@ -2401,6 +2405,16 @@ version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1744e39d1d6a9948f4f388969627434e31128196de472883b39f148769bfe30a"
 dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "linux-keyutils"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "761e49ec5fd8a5a463f9b84e877c373d888935b71c6be78f3767fe2ae6bed18e"
+dependencies = [
+ "bitflags 2.11.0",
  "libc",
 ]
 

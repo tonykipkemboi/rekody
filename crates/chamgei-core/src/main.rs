@@ -340,7 +340,7 @@ fn print_banner(config: &ChamgeiConfig) {
     println!(
         "  {} {} — voice dictation",
         style("chamgei").cyan().bold(),
-        style("v0.1.0").dim(),
+        style("v0.3.0").dim(),
     );
     println!();
 
@@ -401,8 +401,9 @@ fn format_activation_mode(mode: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Run first-time setup if needed.
-    if onboarding::needs_onboarding() {
+    // Check for --setup flag to force re-run onboarding.
+    let force_setup = std::env::args().any(|a| a == "--setup" || a == "--reconfigure");
+    if force_setup || onboarding::needs_onboarding() {
         onboarding::run_onboarding()?;
     }
 

@@ -216,6 +216,21 @@ fn load_config() -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
+/// Read configuration from disk and return it as JSON for the frontend.
+#[tauri::command]
+fn load_config_json() -> String {
+    let path = config_path();
+    match fs::read_to_string(&path) {
+        Ok(contents) => {
+            match toml::from_str::<chamgei_core::ChamgeiConfig>(&contents) {
+                Ok(config) => serde_json::to_string(&config).unwrap_or_default(),
+                Err(_) => serde_json::to_string(&chamgei_core::ChamgeiConfig::default()).unwrap_or_default(),
+            }
+        }
+        Err(_) => serde_json::to_string(&chamgei_core::ChamgeiConfig::default()).unwrap_or_default(),
+    }
+}
+
 /// List available Ollama models as a JSON array.
 #[tauri::command]
 fn list_ollama_models() -> String {
@@ -659,6 +674,7 @@ pub fn run() {
             get_audio_level,
             save_config,
             load_config,
+            load_config_json,
             list_ollama_models,
             get_pipeline_status,
             download_whisper_model,

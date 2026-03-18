@@ -45,8 +45,18 @@ pub fn needs_onboarding() -> bool {
         return true;
     }
 
-    // 3. A Whisper model file must be present.
+    // 3. Clean up any leftover `.partial` files from interrupted downloads.
     let model_dir = resolve_model_dir();
+    if let Ok(entries) = std::fs::read_dir(&model_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "partial") {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    // 4. A Whisper model file must be present.
     let model_file = model_dir.join(whisper_file_name(&config.whisper_model));
     if !model_file.exists() {
         return true;
@@ -61,7 +71,7 @@ pub fn needs_onboarding() -> bool {
 /// download, macOS permission guidance, and config file creation.
 pub fn run_onboarding() -> Result<()> {
     // --- Header -----------------------------------------------------------
-    intro("chamgei v0.1.0").map_err(|e| anyhow::anyhow!(e))?;
+    intro("chamgei v0.3.0").map_err(|e| anyhow::anyhow!(e))?;
 
     // --- Step 1: LLM provider --------------------------------------------
     let provider: &str = select("Choose your LLM provider (cleans up transcriptions)")
@@ -129,6 +139,39 @@ pub fn run_onboarding() -> Result<()> {
         }
     } else {
         String::new()
+    };
+
+    // --- Validate LLM API key --------------------------------------------
+    let api_key: String = if needs_key && !api_key.is_empty() {
+        let mut current_key = api_key;
+        loop {
+            let sp = spinner();
+            sp.start("Validating API key...");
+            if validate_api_key(provider_name, &current_key) {
+                sp.stop("API key valid \u{2713}");
+                break current_key;
+            } else {
+                sp.stop("API key validation failed \u{2014} check your key");
+                let proceed: bool = confirm("Continue anyway?")
+                    .initial_value(false)
+                    .interact()
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                if proceed {
+                    break current_key;
+                }
+                // Re-prompt for key
+                let key: String = input("Enter your API key")
+                    .placeholder("sk-...")
+                    .interact()
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                if !key.is_empty() {
+                    set_keychain(provider_name, &key);
+                }
+                current_key = key;
+            }
+        }
+    } else {
+        api_key
     };
 
     // --- Model name ------------------------------------------------------
@@ -200,6 +243,42 @@ pub fn run_onboarding() -> Result<()> {
         }
     } else {
         None
+    };
+
+    // --- Validate Deepgram API key ---------------------------------------
+    let deepgram_api_key: Option<String> = if let Some(ref dg_key) = deepgram_api_key {
+        if !dg_key.is_empty() {
+            let mut current_key = dg_key.clone();
+            loop {
+                let sp = spinner();
+                sp.start("Validating Deepgram API key...");
+                if validate_api_key("deepgram", &current_key) {
+                    sp.stop("Deepgram API key valid \u{2713}");
+                    break Some(current_key);
+                } else {
+                    sp.stop("Deepgram API key validation failed \u{2014} check your key");
+                    let proceed: bool = confirm("Continue anyway?")
+                        .initial_value(false)
+                        .interact()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if proceed {
+                        break Some(current_key);
+                    }
+                    let key: String = input("Enter your Deepgram API key")
+                        .placeholder("dg_...")
+                        .interact()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if !key.is_empty() {
+                        set_keychain("deepgram", &key);
+                    }
+                    current_key = key;
+                }
+            }
+        } else {
+            deepgram_api_key
+        }
+    } else {
+        deepgram_api_key
     };
 
     // For local Whisper, ask model size and download
@@ -287,6 +366,9 @@ pub fn run_onboarding() -> Result<()> {
                 }
                 Ok(open_mic)
             })?;
+
+        println!("  \u{1f4a1} Tip: Set System Settings > Keyboard > \"Press \u{1f310} key to\" \u{2192} \"Do Nothing\"");
+        println!("     This ensures the Fn key triggers Chamgei instead of Emoji picker.");
     }
 
     // --- Step 4: Write config --------------------------------------------
@@ -397,11 +479,62 @@ injection_method = "clipboard"
 }
 
 // ---------------------------------------------------------------------------
+// API key validation
+// ---------------------------------------------------------------------------
+
+/// Make a lightweight test call to verify an API key works.
+///
+/// Returns `true` if the key appears valid (HTTP 2xx or 400),
+/// `false` on auth errors or network failures.
+fn validate_api_key(provider: &str, key: &str) -> bool {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let (url, auth) = match provider {
+        "groq" => (
+            "https://api.groq.com/openai/v1/models",
+            format!("Bearer {}", key),
+        ),
+        "deepgram" => (
+            "https://api.deepgram.com/v1/projects",
+            format!("Token {}", key),
+        ),
+        "openai" => (
+            "https://api.openai.com/v1/models",
+            format!("Bearer {}", key),
+        ),
+        "cerebras" => (
+            "https://api.cerebras.ai/v1/models",
+            format!("Bearer {}", key),
+        ),
+        "anthropic" => return true, // Anthropic has no lightweight endpoint
+        "gemini" => return true,    // Gemini validation is complex
+        _ => return true,           // Local providers don't need validation
+    };
+
+    match client.get(url).header("Authorization", &auth).send() {
+        Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 400,
+        Err(_) => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Model download with progress bar
 // ---------------------------------------------------------------------------
 
 /// Download a file from `url` to `dest` using reqwest with an indicatif progress bar.
+///
+/// Downloads to a `.partial` temp file first, then atomically renames on success.
+/// This prevents partial/corrupt model files from being left behind on interruption.
 fn download_model(url: &str, dest: &std::path::Path) -> Result<()> {
+    let partial_path = dest.with_extension(
+        dest.extension()
+            .map(|e| format!("{}.partial", e.to_string_lossy()))
+            .unwrap_or_else(|| "partial".to_string()),
+    );
+
     let response = reqwest::blocking::get(url)
         .context("failed to start model download")?;
 
@@ -425,8 +558,8 @@ fn download_model(url: &str, dest: &std::path::Path) -> Result<()> {
         .progress_chars("\u{2588}\u{2593}\u{2591}"),
     );
 
-    let mut file = std::fs::File::create(dest)
-        .context("failed to create model file")?;
+    let mut file = std::fs::File::create(&partial_path)
+        .context("failed to create partial model file")?;
 
     let mut reader = std::io::BufReader::new(response);
     let mut buf = [0u8; 8192];
@@ -441,6 +574,11 @@ fn download_model(url: &str, dest: &std::path::Path) -> Result<()> {
     }
 
     pb.finish_and_clear();
+
+    // Atomic rename: only move to final path after successful download.
+    std::fs::rename(&partial_path, dest)
+        .context("failed to rename partial download to final model path")?;
+
     Ok(())
 }
 

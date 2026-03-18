@@ -23,7 +23,7 @@ cliclack = "0.3"
 indicatif = "0.17"
 console = "0.15"
 reqwest = { workspace = true, features = ["blocking"] }
-keyring = { version = "3", features = ["apple-native"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 [[bin]]
 name = "chamgei"

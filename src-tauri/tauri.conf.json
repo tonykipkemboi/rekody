@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/main/packages/api/schema.json",
   "productName": "Chamgei",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "identifier": "com.chamgei.voice",
   "build": {
     "frontendDist": "../dist",
@@ -27,7 +27,7 @@
       "tooltip": "Chamgei — Voice Dictation"
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
   "bundle": {

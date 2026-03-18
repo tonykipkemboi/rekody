@@ -13,6 +13,7 @@ tauri-plugin-shell = "2"
 serde.workspace = true
 serde_json.workspace = true
 chamgei-core.workspace = true
+toml.workspace = true
 chamgei-llm.workspace = true
 dirs = "6"
 arboard = "3"
@@ -20,7 +21,7 @@ cpal = "0.15"
 tokio.workspace = true
 tracing.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
-keyring = { version = "3", features = ["apple-native"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 
 [lib]
 name = "chamgei_tauri_lib"
