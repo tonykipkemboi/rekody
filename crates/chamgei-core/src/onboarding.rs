@@ -98,24 +98,34 @@ pub fn run_onboarding() -> Result<()> {
     // --- API key — check Keychain first ----------------------------------
     let api_key: String = if needs_key {
         if let Some(masked) = get_keychain_masked(provider_name) {
-            println!("  {} API key found in Keychain: {masked}", provider_name);
+            println!("  Found in Keychain: {masked}");
             let use_existing: bool = confirm("Use existing key? (No = enter a new one)")
                 .initial_value(true)
                 .interact()
                 .map_err(|e| anyhow::anyhow!(e))?;
             if use_existing {
-                String::new() // empty = use Keychain at runtime
+                // Retrieve the actual key from Keychain
+                get_keychain_full(provider_name)
+                    .unwrap_or_default()
             } else {
-                input("Enter your new API key")
+                let key: String = input("Enter your new API key")
                     .placeholder("sk-...")
                     .interact()
-                    .map_err(|e| anyhow::anyhow!(e))?
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                if !key.is_empty() {
+                    set_keychain(provider_name, &key);
+                }
+                key
             }
         } else {
-            input("Enter your API key")
+            let key: String = input("Enter your API key")
                 .placeholder("sk-...")
                 .interact()
-                .map_err(|e| anyhow::anyhow!(e))?
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if !key.is_empty() {
+                set_keychain(provider_name, &key);
+            }
+            key
         }
     } else {
         String::new()
@@ -156,27 +166,37 @@ pub fn run_onboarding() -> Result<()> {
     // Deepgram needs its own API key — check Keychain first
     let deepgram_api_key: Option<String> = if stt_engine == "deepgram" {
         if let Some(masked) = get_keychain_masked("deepgram") {
-            println!("  Deepgram API key found in Keychain: {masked}");
-            let update: bool = confirm("Use existing key? (No = enter a new one)")
+            println!("  Found in Keychain: {masked}");
+            let use_existing: bool = confirm("Use existing key? (No = enter a new one)")
                 .initial_value(true)
                 .interact()
                 .map_err(|e| anyhow::anyhow!(e))?;
-            if update {
-                // Use the key from Keychain — it'll be read at runtime
-                None
+            if use_existing {
+                // Retrieve the actual key from Keychain and write it to config
+                get_keychain_full("deepgram")
             } else {
                 let key: String = input("Enter your new Deepgram API key")
                     .placeholder("dg_...")
                     .interact()
                     .map_err(|e| anyhow::anyhow!(e))?;
-                if key.is_empty() { None } else { Some(key) }
+                if key.is_empty() {
+                    None
+                } else {
+                    set_keychain("deepgram", &key);
+                    Some(key)
+                }
             }
         } else {
             let key: String = input("Enter your Deepgram API key")
                 .placeholder("dg_...")
                 .interact()
                 .map_err(|e| anyhow::anyhow!(e))?;
-            if key.is_empty() { None } else { Some(key) }
+            if key.is_empty() {
+                None
+            } else {
+                set_keychain("deepgram", &key);
+                Some(key)
+            }
         }
     } else {
         None
@@ -511,6 +531,22 @@ fn get_keychain_masked(provider: &str) -> Option<String> {
         Some(format!("{}...{}", &key[..4], &key[key.len()-4..]))
     } else {
         Some("****".to_string())
+    }
+}
+
+/// Retrieve the full (unmasked) API key from macOS Keychain, or None.
+fn get_keychain_full(provider: &str) -> Option<String> {
+    let entry = keyring::Entry::new("com.chamgei.voice", provider).ok()?;
+    let key = entry.get_password().ok()?;
+    if key.is_empty() { None } else { Some(key) }
+}
+
+/// Save an API key to macOS Keychain.
+fn set_keychain(provider: &str, key: &str) {
+    if let Ok(entry) = keyring::Entry::new("com.chamgei.voice", provider) {
+        if let Err(e) = entry.set_password(key) {
+            tracing::warn!("failed to save {provider} key to Keychain: {e}");
+        }
     }
 }
 
