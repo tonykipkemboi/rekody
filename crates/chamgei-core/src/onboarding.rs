@@ -22,47 +22,25 @@ use cliclack::{confirm, input, intro, outro, select, spinner};
 /// 2. At least one LLM provider has a non-empty API key (or is a local provider)
 /// 3. At least one Whisper model file is present in the model directory
 pub fn needs_onboarding() -> bool {
+    // Onboarding is needed only if there's no valid config file.
+    // The minimal requirement: a parseable config.toml exists.
+    // Missing models or API keys are handled at runtime with
+    // clear error messages — not by re-triggering the full wizard.
     let config_path = match config_path() {
         Some(p) => p,
         None => return true,
     };
 
-    // 1. Config file must exist.
     if !config_path.exists() {
         return true;
     }
 
-    // 2. Config must contain at least one usable provider.
+    // Config must be parseable TOML.
     let config_contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(_) => return true,
     };
-    let config: crate::ChamgeiConfig = match toml::from_str(&config_contents) {
-        Ok(c) => c,
-        Err(_) => return true,
-    };
-    if !has_any_provider(&config) {
-        return true;
-    }
-
-    // 3. Clean up any leftover `.partial` files from interrupted downloads.
-    let model_dir = resolve_model_dir();
-    if let Ok(entries) = std::fs::read_dir(&model_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "partial") {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
-
-    // 4. A Whisper model file must be present.
-    let model_file = model_dir.join(whisper_file_name(&config.whisper_model));
-    if !model_file.exists() {
-        return true;
-    }
-
-    false
+    toml::from_str::<crate::ChamgeiConfig>(&config_contents).is_err()
 }
 
 /// Run the interactive first-run onboarding wizard.
