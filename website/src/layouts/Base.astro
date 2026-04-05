@@ -1,0 +1,69 @@
+---
+import '../styles/global.css';
+
+export interface Props {
+  title?: string;
+  description?: string;
+  ogImage?: string;
+}
+
+const {
+  title = 'chamgei — Voice Dictation for Developers',
+  description = 'Open-source macOS voice dictation. Hold ⌥Space, speak, release. Text appears at your cursor in any app. Powered by Deepgram Nova-3 (~200ms latency).',
+  ogImage = '/og-image.png',
+} = Astro.props;
+
+const canonicalUrl = new URL(Astro.url.pathname, Astro.site ?? 'https://chamgei.ai');
+const ogImageUrl = new URL(ogImage, Astro.site ?? 'https://chamgei.ai');
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="canonical" href={canonicalUrl} />
+
+    <!-- Primary SEO -->
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="author" content="Tony Kipkemboi" />
+    <meta name="theme-color" content="#0d9488" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" href="/icon.png" sizes="128x128" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+
+    <!-- JSON-LD -->
+    <script type="application/ld+json" set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "chamgei",
+      "applicationCategory": "UtilitiesApplication",
+      "operatingSystem": "macOS",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "url": "https://chamgei.ai",
+      "description": description,
+      "license": "https://opensource.org/licenses/MIT",
+    })} />
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
