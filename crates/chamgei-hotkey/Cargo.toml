@@ -6,8 +6,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rdev = "0.5"
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+# No platform-specific crate deps needed — all macOS APIs used via raw FFI.

@@ -62,8 +62,6 @@ struct KeyState {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
-    use core_foundation::base::TCFType;
-    use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
     use std::os::raw::c_void;
 
     /// macOS virtual keycodes.
@@ -116,6 +114,16 @@ mod platform {
 
         fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
         fn CGEventGetFlags(event: *mut c_void) -> u64;
+
+        // CFRunLoop raw FFI (avoids core-foundation crate linkage issues on CI).
+        fn CFRunLoopGetCurrent() -> *mut c_void; // CFRunLoopRef
+        fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+        fn CFRunLoopRun();
+    }
+
+    // kCFRunLoopCommonModes — a well-known CFStringRef constant exported from CoreFoundation.
+    unsafe extern "C" {
+        static kCFRunLoopCommonModes: *const c_void;
     }
 
     /// Check if Option (Alt) flag is set.
@@ -302,27 +310,17 @@ mod platform {
                     return;
                 }
 
-                // Wrap as a CFRunLoopSource and add to this thread's run loop.
-                let source = unsafe {
-                    core_foundation::runloop::CFRunLoopSource::wrap_under_create_rule(
-                        source as *mut _,
-                    )
-                };
-
-                let run_loop = CFRunLoop::get_current();
+                // Add the RunLoopSource to this thread's run loop and enable the tap.
                 unsafe {
-                    run_loop.add_source(&source, kCFRunLoopCommonModes);
-                }
-
-                // Enable the tap.
-                unsafe {
+                    let run_loop = CFRunLoopGetCurrent();
+                    CFRunLoopAddSource(run_loop, source, kCFRunLoopCommonModes);
                     CGEventTapEnable(tap, true);
                 }
 
                 tracing::info!(
                     "CGEventTap registered, entering run loop (Option+Space to dictate)"
                 );
-                CFRunLoop::run_current();
+                unsafe { CFRunLoopRun() };
 
                 tracing::warn!("hotkey run loop exited unexpectedly");
             })?;
