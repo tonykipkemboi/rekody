@@ -719,6 +719,7 @@ fn resolve_model_dir() -> PathBuf {
 }
 
 /// Map a whisper model size string to its GGML filename.
+#[allow(dead_code)]
 fn whisper_file_name(size: &str) -> &str {
     match size.to_lowercase().as_str() {
         "tiny" => "ggml-tiny.en.bin",
@@ -782,6 +783,7 @@ fn pick_ollama_model(default: &str) -> Result<String> {
 }
 
 /// Check whether the config has at least one usable LLM provider.
+#[allow(dead_code)]
 fn has_any_provider(config: &crate::ChamgeiConfig) -> bool {
     // New-style providers list.
     for p in &config.providers {

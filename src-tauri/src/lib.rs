@@ -18,6 +18,52 @@ struct PipelineState {
     status_manager: chamgei_core::status::StatusManager,
 }
 
+/// Handle for controlling the pipeline from the UI (start/stop recording).
+struct PipelineControlState {
+    control: Arc<std::sync::Mutex<Option<chamgei_core::PipelineControl>>>,
+}
+
+#[tauri::command]
+fn toggle_recording(
+    state: tauri::State<'_, PipelineState>,
+    control: tauri::State<'_, PipelineControlState>,
+) -> String {
+    let status = state.status_manager.get_status();
+    let is_recording = matches!(status, chamgei_core::status::PipelineStatus::Recording);
+
+    if let Some(ctrl) = control.control.lock().unwrap().as_ref() {
+        if is_recording {
+            ctrl.stop_recording();
+            "stopped".to_string()
+        } else {
+            ctrl.start_recording();
+            "started".to_string()
+        }
+    } else {
+        "no_pipeline".to_string()
+    }
+}
+
+#[tauri::command]
+fn start_recording_cmd(control: tauri::State<'_, PipelineControlState>) -> String {
+    if let Some(ctrl) = control.control.lock().unwrap().as_ref() {
+        ctrl.start_recording();
+        "started".to_string()
+    } else {
+        "no_pipeline".to_string()
+    }
+}
+
+#[tauri::command]
+fn stop_recording_cmd(control: tauri::State<'_, PipelineControlState>) -> String {
+    if let Some(ctrl) = control.control.lock().unwrap().as_ref() {
+        ctrl.stop_recording();
+        "stopped".to_string()
+    } else {
+        "no_pipeline".to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Existing commands (preserved)
 // ---------------------------------------------------------------------------
@@ -70,6 +116,10 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 struct PermissionStatus {
     mic: bool,
     accessibility: bool,
+    /// Input Monitoring permission (needed for CGEventTap hotkey detection).
+    input_monitoring: bool,
+    /// Whether the device appears to be MDM-managed (corporate Mac).
+    mdm_managed: bool,
 }
 
 /// Check if microphone and accessibility permissions are granted (macOS).
@@ -79,13 +129,21 @@ fn check_permissions() -> PermissionStatus {
     {
         let mic = check_mic_permission();
         let accessibility = check_accessibility_permission();
-        PermissionStatus { mic, accessibility }
+        let input_monitoring = check_input_monitoring();
+        PermissionStatus {
+            mic,
+            accessibility,
+            input_monitoring,
+            mdm_managed: is_mdm_managed(),
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
         PermissionStatus {
             mic: true,
             accessibility: true,
+            input_monitoring: true,
+            mdm_managed: false,
         }
     }
 }
@@ -423,23 +481,98 @@ fn check_mic_permission() -> bool {
 
 #[cfg(target_os = "macos")]
 fn check_accessibility_permission() -> bool {
-    // Link to ApplicationServices which provides AXIsProcessTrusted.
-    // We use a small osascript call instead to avoid raw FFI.
-    let output = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            "use framework \"ApplicationServices\"",
-            "-e",
-            "return (current application's AXIsProcessTrusted()) as boolean",
-        ])
+    // Use AXIsProcessTrusted via FFI for a fast, reliable check.
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// Check if Input Monitoring permission is likely granted by attempting
+/// a quick CGEventTap creation.
+#[cfg(target_os = "macos")]
+fn check_input_monitoring() -> bool {
+    use std::os::raw::c_void;
+
+    unsafe extern "C" {
+        fn CGEventTapCreate(
+            tap: u32,
+            place: u32,
+            options: u32,
+            events_of_interest: u64,
+            callback: unsafe extern "C" fn(
+                *mut c_void,
+                u32,
+                *mut c_void,
+                *mut c_void,
+            ) -> *mut c_void,
+            user_info: *mut c_void,
+        ) -> *mut c_void;
+    }
+
+    unsafe extern "C" fn noop_callback(
+        _proxy: *mut c_void,
+        _event_type: u32,
+        event: *mut c_void,
+        _user_info: *mut c_void,
+    ) -> *mut c_void {
+        event
+    }
+
+    // Try creating a passive event tap. If it fails, permission is denied.
+    let tap = unsafe {
+        CGEventTapCreate(
+            0,                           // kCGHIDEventTap
+            0,                           // kCGHeadInsertEventTap
+            1,                           // kCGEventTapOptionListenOnly
+            (1u64 << 10) | (1u64 << 11), // KeyDown | KeyUp
+            noop_callback,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if tap.is_null() {
+        false
+    } else {
+        // Clean up — release the tap.
+        unsafe extern "C" {
+            fn CFRelease(cf: *mut c_void);
+        }
+        unsafe { CFRelease(tap) };
+        true
+    }
+}
+
+/// Detect if this Mac is managed by MDM (Mobile Device Management).
+/// Checks for common indicators of corporate management.
+#[cfg(target_os = "macos")]
+fn is_mdm_managed() -> bool {
+    // Check for MDM enrollment profile
+    let profiles = std::process::Command::new("profiles")
+        .args(["status", "-type", "enrollment"])
         .output();
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
-            s == "true"
+    if let Ok(out) = profiles {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if stdout.contains("MDM enrollment: Yes") || stdout.contains("Enrolled via DEP: Yes") {
+            return true;
         }
-        _ => false,
+    }
+
+    // Fallback: check if /Library/Managed Preferences exists with content
+    std::path::Path::new("/Library/Managed Preferences")
+        .read_dir()
+        .is_ok_and(|mut d| d.next().is_some())
+}
+
+/// Open System Settings to the Input Monitoring privacy pane.
+#[tauri::command]
+fn open_input_monitoring_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+            .spawn();
     }
 }
 
@@ -637,6 +770,40 @@ fn config_path() -> PathBuf {
         .unwrap_or_default()
 }
 
+/// Populate API keys from the macOS Keychain into the config struct so the
+/// pipeline can use cloud STT/LLM providers.
+fn resolve_config_keys(mut config: chamgei_core::ChamgeiConfig) -> chamgei_core::ChamgeiConfig {
+    // Groq key (legacy field)
+    if config.groq_api_key.as_ref().is_none_or(|k| k.is_empty()) {
+        config.groq_api_key = get_api_key_full("groq");
+    }
+    // Deepgram key
+    if config
+        .deepgram_api_key
+        .as_ref()
+        .is_none_or(|k| k.is_empty())
+    {
+        config.deepgram_api_key = get_api_key_full("deepgram");
+    }
+    // Cerebras key (legacy field)
+    if config
+        .cerebras_api_key
+        .as_ref()
+        .is_none_or(|k| k.is_empty())
+    {
+        config.cerebras_api_key = get_api_key_full("cerebras");
+    }
+    // Provider chain keys
+    for provider in &mut config.providers {
+        if provider.api_key.is_empty()
+            && let Some(key) = get_api_key_full(&provider.name)
+        {
+            provider.api_key = key;
+        }
+    }
+    config
+}
+
 // ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
@@ -648,16 +815,34 @@ pub fn run() {
         .manage(PipelineState {
             status_manager: chamgei_core::status::StatusManager::new(),
         })
+        .manage(PipelineControlState {
+            control: Arc::new(std::sync::Mutex::new(None)),
+        })
         .setup(|app| {
             // --- Tray menu ---------------------------------------------------
             let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let history_item = MenuItem::with_id(app, "history", "History", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
+            let separator2 = PredefinedMenuItem::separator(app)?;
+            let status_item = MenuItem::with_id(
+                app,
+                "status",
+                "Ready — Option+Space to dictate",
+                false,
+                None::<&str>,
+            )?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Chamgei", true, None::<&str>)?;
 
             let menu = Menu::with_items(
                 app,
-                &[&settings_item, &history_item, &separator, &quit_item],
+                &[
+                    &status_item,
+                    &separator,
+                    &settings_item,
+                    &history_item,
+                    &separator2,
+                    &quit_item,
+                ],
             )?;
 
             let app_handle = app.handle().clone();
@@ -692,22 +877,62 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // NOTE: The dictation pipeline is NOT auto-started in the GUI app.
-            //
-            // rdev::listen (used for global hotkeys) calls macOS
-            // TSMGetInputSourceProperty which crashes when called from a
-            // non-main-dispatch-queue thread. In the Tauri app, the setup
-            // closure runs on the main thread but pipeline.run() spawns
-            // rdev on a background thread, triggering the crash.
-            //
-            // The .dmg app provides: onboarding, settings, history.
-            // The dictation pipeline runs via the `chamgei` CLI binary.
-            //
-            // TODO: Replace rdev with CGEventTap directly to fix this.
+            // Hide dock icon — run as a menu bar / tray-only app.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // Migrate any API keys from config.toml into macOS Keychain
             migrate_keys_to_keychain();
 
-            tracing::info!("Chamgei app started (dictation runs via CLI)");
+            // --- Start the dictation pipeline in a background task -----------
+            //
+            // Now that chamgei-hotkey uses CGEventTap (not rdev), the pipeline
+            // runs safely inside the Tauri process on a background thread.
+            let status_manager: chamgei_core::status::StatusManager =
+                app.state::<PipelineState>().status_manager.clone();
+
+            // Register a callback to emit Tauri events on status changes.
+            let app_handle_for_status = app.handle().clone();
+            status_manager.on_status_change(Box::new(move |status| {
+                let _ = app_handle_for_status.emit("pipeline-status", status);
+            }));
+
+            // Load config and build the pipeline.
+            let config = {
+                let path = config_path();
+                match std::fs::read_to_string(&path) {
+                    Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
+                    Err(_) => chamgei_core::ChamgeiConfig::default(),
+                }
+            };
+
+            // Resolve API keys from Keychain into the config for the pipeline.
+            let config = resolve_config_keys(config);
+
+            let sm_clone = status_manager.clone();
+            let control_state: tauri::State<'_, PipelineControlState> = app.state();
+            let control_mutex = control_state.control.clone();
+
+            tauri::async_runtime::spawn(async move {
+                match chamgei_core::Pipeline::new(config) {
+                    Ok(mut pipeline) => {
+                        // Create a control handle so the UI can start/stop recording.
+                        let ctrl = pipeline.create_control();
+                        *control_mutex.lock().unwrap() = Some(ctrl);
+
+                        let pipeline = pipeline.with_status_manager(sm_clone);
+                        tracing::info!("dictation pipeline started in Tauri app");
+                        if let Err(e) = pipeline.run().await {
+                            tracing::error!(error = %e, "pipeline exited with error");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to create pipeline");
+                    }
+                }
+            });
+
+            tracing::info!("Chamgei app started");
 
             Ok(())
         })
@@ -719,6 +944,7 @@ pub fn run() {
             check_permissions,
             open_mic_settings,
             open_accessibility_settings,
+            open_input_monitoring_settings,
             get_audio_level,
             save_config,
             load_config,
@@ -731,6 +957,9 @@ pub fn run() {
             get_api_key_masked,
             delete_api_key,
             test_api_key,
+            toggle_recording,
+            start_recording_cmd,
+            stop_recording_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

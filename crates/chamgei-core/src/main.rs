@@ -335,10 +335,10 @@ fn cmd_history(
                     return false;
                 }
             }
-            if let Some(ref app) = app_filter {
-                if !e.app_context.to_lowercase().contains(&app.to_lowercase()) {
-                    return false;
-                }
+            if let Some(ref app) = app_filter
+                && !e.app_context.to_lowercase().contains(&app.to_lowercase())
+            {
+                return false;
             }
             true
         })
@@ -1041,50 +1041,47 @@ async fn run_dictation(verbose: bool) -> Result<()> {
 fn inject_keychain_keys(config: &mut ChamgeiConfig) {
     // Deepgram STT key
     if config.deepgram_api_key.is_none() || config.deepgram_api_key.as_deref() == Some("") {
-        if let Ok(key) = get_keychain_key("deepgram") {
-            if !key.is_empty() {
-                config.deepgram_api_key = Some(key);
-            }
+        if let Ok(key) = get_keychain_key("deepgram")
+            && !key.is_empty()
+        {
+            config.deepgram_api_key = Some(key);
         }
         // Also try the legacy account name
-        if config.deepgram_api_key.is_none() {
-            if let Ok(key) = get_keychain_key("deepgram_api_key") {
-                if !key.is_empty() {
-                    config.deepgram_api_key = Some(key);
-                }
-            }
+        if config.deepgram_api_key.is_none()
+            && let Ok(key) = get_keychain_key("deepgram_api_key")
+            && !key.is_empty()
+        {
+            config.deepgram_api_key = Some(key);
         }
     }
     // Groq key for STT or LLM
-    if config.groq_api_key.is_none() || config.groq_api_key.as_deref() == Some("") {
-        if let Ok(key) = get_keychain_key("groq") {
-            if !key.is_empty() {
-                config.groq_api_key = Some(key.clone());
-                // Update existing groq provider entry, or create one if absent.
-                let existing = config.providers.iter_mut().find(|p| p.name == "groq");
-                if let Some(p) = existing {
-                    if p.api_key.is_empty() {
-                        p.api_key = key;
-                    }
-                } else {
-                    config.providers.push(chamgei_core::ProviderConfig {
-                        name: "groq".into(),
-                        api_key: key,
-                        model: "openai/gpt-oss-20b".into(),
-                        base_url: None,
-                    });
-                }
+    if (config.groq_api_key.is_none() || config.groq_api_key.as_deref() == Some(""))
+        && let Ok(key) = get_keychain_key("groq")
+        && !key.is_empty()
+    {
+        config.groq_api_key = Some(key.clone());
+        // Update existing groq provider entry, or create one if absent.
+        let existing = config.providers.iter_mut().find(|p| p.name == "groq");
+        if let Some(p) = existing {
+            if p.api_key.is_empty() {
+                p.api_key = key;
             }
+        } else {
+            config.providers.push(chamgei_core::ProviderConfig {
+                name: "groq".into(),
+                api_key: key,
+                model: "openai/gpt-oss-20b".into(),
+                base_url: None,
+            });
         }
     }
     // Inject keychain keys into any providers array entries that lack a key.
     for p in config.providers.iter_mut() {
-        if p.api_key.is_empty() {
-            if let Ok(key) = get_keychain_key(&p.name) {
-                if !key.is_empty() {
-                    p.api_key = key;
-                }
-            }
+        if p.api_key.is_empty()
+            && let Ok(key) = get_keychain_key(&p.name)
+            && !key.is_empty()
+        {
+            p.api_key = key;
         }
     }
 }
