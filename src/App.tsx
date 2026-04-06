@@ -1102,16 +1102,22 @@ function SettingsApp() {
     setSaveStatus("idle");
   };
 
+  // Sanitize a string before embedding in a TOML quoted value.
+  // Strips newlines and escapes backslashes and double-quotes so a crafted
+  // setting value cannot inject extra TOML keys.
+  const toTomlStr = (val: string) =>
+    val.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]/g, "");
+
   const saveSettings = async () => {
     setSaving(true);
     setSaveStatus("idle");
     try {
-      const toml = `activation_mode = "${settings.activationMode}"
-whisper_model = "${settings.whisperModel}"
+      const toml = `activation_mode = "${toTomlStr(settings.activationMode)}"
+whisper_model = "${toTomlStr(settings.whisperModel)}"
 vad_threshold = ${settings.vadThreshold}
-injection_method = "${settings.injectionMethod}"
-stt_engine = "${settings.sttEngine}"
-llm_provider = "${settings.llmProvider}"
+injection_method = "${toTomlStr(settings.injectionMethod)}"
+stt_engine = "${toTomlStr(settings.sttEngine)}"
+llm_provider = "${toTomlStr(settings.llmProvider)}"
 privacy_mode = ${settings.privacyMode}
 `;
       await invoke("save_config", { config: toml });
@@ -1770,7 +1776,7 @@ function HistoryTab() {
         <div className="space-y-2">
           {filtered.map((entry, idx) => (
             <div
-              key={idx}
+              key={`${entry.timestamp}-${idx}`}
               className="p-4 rounded-xl bg-[var(--bg-card)] border border-[var(--border)] group"
             >
               <div className="flex items-start justify-between gap-3">
@@ -1814,7 +1820,7 @@ function AboutTab() {
         </div>
         <div>
           <h3 className="text-lg font-bold text-[var(--text-primary)]">Chamgei</h3>
-          <p className="text-xs text-[var(--text-secondary)]">Version 0.1.0</p>
+          <p className="text-xs text-[var(--text-secondary)]">Version 0.3.0</p>
           <p className="text-xs text-[var(--text-secondary)] mt-1">Privacy-first voice dictation for macOS</p>
         </div>
       </div>

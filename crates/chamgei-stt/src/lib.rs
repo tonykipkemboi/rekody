@@ -637,14 +637,17 @@ impl SttEngine for DeepgramEngine {
         let start = Instant::now();
         let wav_data = encode_wav(samples);
 
-        let url = format!(
-            "https://api.deepgram.com/v1/listen?model={}&language=en&smart_format=true&punctuate=true",
-            self.model
-        );
-
+        // Use reqwest query params so the model value is URL-encoded automatically,
+        // preventing parameter injection if the config contains special characters.
         let response = self
             .client
-            .post(&url)
+            .post("https://api.deepgram.com/v1/listen")
+            .query(&[
+                ("model",        self.model.as_str()),
+                ("language",     "en"),
+                ("smart_format", "true"),
+                ("punctuate",    "true"),
+            ])
             .header("Authorization", format!("Token {}", self.api_key))
             .header("Content-Type", "audio/wav")
             .body(wav_data)

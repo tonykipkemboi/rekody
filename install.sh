@@ -74,7 +74,8 @@ if ! curl -fSL --progress-bar -o "$TMPDIR/$TARBALL" "$DOWNLOAD_URL" 2>&1; then
 
     echo "  Building from source (this takes 1-2 minutes)..."
     BUILD_DIR="$HOME/.chamgei-build"
-    git clone --depth 1 "https://github.com/${GITHUB_REPO}.git" "$BUILD_DIR" 2>/dev/null || (cd "$BUILD_DIR" && git pull --ff-only)
+    # Pin to the release tag so we don't pull unreviewed commits from main
+    git clone --depth 1 --branch "$VERSION" "https://github.com/${GITHUB_REPO}.git" "$BUILD_DIR" 2>/dev/null || (cd "$BUILD_DIR" && git fetch --tags && git checkout "$VERSION")
     cd "$BUILD_DIR"
     cargo build --release -p chamgei-core 2>&1 | tail -1
     cp target/release/chamgei "$TMPDIR/chamgei"
@@ -114,7 +115,13 @@ else
     fi
 
     if [ -n "$ACTUAL" ] && [ "$ACTUAL" != "$WHISPER_SHA256" ]; then
-        echo "  WARNING: Checksum mismatch (model may have been updated upstream)"
+        echo "  ERROR: Whisper model checksum mismatch — aborting for safety."
+        echo "         Expected: $WHISPER_SHA256"
+        echo "         Got:      $ACTUAL"
+        rm -f "$MODEL_DIR/$WHISPER_FILE"
+        exit 1
+    elif [ -z "$ACTUAL" ]; then
+        echo "  WARNING: Could not verify model checksum (shasum/sha256sum not found)"
     fi
 fi
 

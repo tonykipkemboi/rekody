@@ -45,14 +45,19 @@
 <script>
   (async () => {
     try {
-      const res = await fetch('https://api.github.com/repos/tonykipkemboi/chamgei');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch('https://api.github.com/repos/tonykipkemboi/chamgei', {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
       if (!res.ok) return;
       const data = await res.json() as { stargazers_count?: number };
       const count = data.stargazers_count;
-      if (typeof count === 'number' && count > 0) {
+      if (typeof count === 'number' && count >= 0) {
         const el = document.getElementById('star-count');
         if (el) el.textContent = `${count.toLocaleString()} stars`;
       }
-    } catch { /* silent */ }
+    } catch { /* silent — network unavailable or timed out */ }
   })();
 </script>
