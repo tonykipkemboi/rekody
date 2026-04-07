@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import { Analytics } from '@vercel/analytics/astro';
 
 export interface Props {
   title?: string;
@@ -65,5 +66,6 @@ const ogImageUrl = new URL(ogImage, Astro.site ?? 'https://chamgei.ai');
   </head>
   <body>
     <slot />
+    <Analytics />
   </body>
 </html>
