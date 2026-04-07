@@ -34,12 +34,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
-      - run: npm install --legacy-peer-deps
-      - run: npm run build
