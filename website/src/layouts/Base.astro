@@ -14,8 +14,8 @@ const {
   ogImage = '/og-image.png',
 } = Astro.props;
 
-const canonicalUrl = new URL(Astro.url.pathname, Astro.site ?? 'https://chamgei.ai');
-const ogImageUrl = new URL(ogImage, Astro.site ?? 'https://chamgei.ai');
+const canonicalUrl = new URL(Astro.url.pathname, Astro.site ?? 'https://chamgei.com');
+const ogImageUrl = new URL(ogImage, Astro.site ?? 'https://chamgei.com');
 ---
 
 <!doctype html>
@@ -59,7 +59,7 @@ const ogImageUrl = new URL(ogImage, Astro.site ?? 'https://chamgei.ai');
       "applicationCategory": "UtilitiesApplication",
       "operatingSystem": "macOS",
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-      "url": "https://chamgei.ai",
+      "url": "https://chamgei.com",
       "description": description,
       "license": "https://opensource.org/licenses/MIT",
     })} />
