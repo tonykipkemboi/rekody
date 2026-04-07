@@ -12,9 +12,10 @@ import PrivacyBlock from '../components/PrivacyBlock.astro';
 import SocialProof from '../components/SocialProof.astro';
 import Faq from '../components/Faq.astro';
 import Footer from '../components/Footer.astro';
+import { faqs } from '../components/Faq.astro';
 ---
 
-<Base>
+<Base faqSchema={faqs}>
   <Navbar />
   <main>
     <Hero />
