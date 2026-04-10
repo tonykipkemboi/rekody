@@ -337,12 +337,29 @@ pub fn run_onboarding() -> Result<()> {
     // --- Step 3: macOS permissions ---------------------------------------
     #[cfg(target_os = "macos")]
     {
-        let open_prefs: bool = confirm("Open System Settings to grant Accessibility permissions?")
-            .initial_value(true)
-            .interact()
-            .map_err(|e| anyhow::anyhow!(e))?;
+        // Detect Accessibility permission. If missing, trigger the macOS
+        // dialog via AXIsProcessTrustedWithOptions(prompt=true), which also
+        // adds /usr/local/bin/chamgei to the Accessibility list.
+        if chamgei_hotkey::is_accessibility_trusted() {
+            println!(
+                "  {} Accessibility permission already granted.",
+                console::style("✓").green().bold()
+            );
+        } else {
+            println!(
+                "  {} Accessibility permission not granted.",
+                console::style("✗").red().bold()
+            );
+            println!("  chamgei needs Accessibility to capture ⌥Space system-wide.");
+            println!();
+            println!("  A macOS dialog will appear asking you to open System Settings.");
+            println!("  After granting permission, restart chamgei.");
+            println!();
 
-        if open_prefs {
+            // Trigger the system prompt (adds chamgei to the Accessibility list).
+            let _ = chamgei_hotkey::request_accessibility_permission();
+
+            // Also open the Accessibility settings pane directly.
             let _ = Command::new("open")
                 .arg(
                     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",

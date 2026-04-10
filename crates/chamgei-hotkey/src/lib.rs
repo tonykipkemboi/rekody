@@ -106,6 +106,10 @@ mod platform {
 
         fn CGEventTapEnable(tap: *mut c_void, enable: bool);
 
+        // Check if the current process has Accessibility permission.
+        // Returns true if already granted, false otherwise (no prompt).
+        fn AXIsProcessTrusted() -> bool;
+
         fn CFMachPortCreateRunLoopSource(
             allocator: *const c_void,
             port: *mut c_void,
@@ -279,10 +283,28 @@ mod platform {
                     | (1u64 << K_CGEVENT_KEY_UP)
                     | (1u64 << K_CGEVENT_FLAGS_CHANGED);
 
+                // Check Accessibility permission before attempting to create the
+                // tap. Without it, CGEventTapCreate returns null and ⌥Space
+                // passes through to the focused app unhandled.
+                if !unsafe { AXIsProcessTrusted() } {
+                    tracing::error!(
+                        "Accessibility permission not granted for this process.\n\
+                         Triggering macOS permission prompt…\n\
+                         \n\
+                         Steps:\n\
+                         1. Click \"Open System Settings\" on the dialog\n\
+                         2. Toggle chamgei ON in the Accessibility list\n\
+                         3. Restart chamgei\n\
+                         \n\
+                         (Run 'chamgei doctor' to re-check)"
+                    );
+                    // Fire the system prompt to add chamgei to the list.
+                    let _ = crate::request_accessibility_permission();
+                    return;
+                }
+
                 // Create an active event tap so we can suppress Option+Space
                 // before it reaches the focused application.
-                // Requires Accessibility permission (System Settings →
-                // Privacy & Security → Accessibility).
                 let tap = unsafe {
                     CGEventTapCreate(
                         K_CGEVENT_TAP_LOCATION_HID,
@@ -340,3 +362,93 @@ mod platform {
 }
 
 pub use platform::start_listener;
+
+/// Returns true if the current process has been granted macOS Accessibility
+/// permission. This is a silent check — no system dialog is shown.
+#[cfg(target_os = "macos")]
+pub fn is_accessibility_trusted() -> bool {
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_accessibility_trusted() -> bool {
+    true
+}
+
+/// Check Accessibility permission AND, if not granted, trigger the macOS
+/// system dialog prompting the user to grant it. This is what actually adds
+/// the binary to the Accessibility list in System Settings.
+///
+/// Returns `true` if already trusted. Returns `false` if the prompt was shown
+/// (user must grant permission and re-run chamgei).
+#[cfg(target_os = "macos")]
+pub fn request_accessibility_permission() -> bool {
+    use std::os::raw::{c_char, c_void};
+
+    unsafe extern "C" {
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            num_values: i64,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        fn CFStringCreateWithCString(
+            allocator: *const c_void,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> *const c_void;
+        fn CFRelease(cf: *const c_void);
+
+        static kCFBooleanTrue: *const c_void;
+        // Standard CF dictionary callback tables for string keys + CF values.
+        static kCFTypeDictionaryKeyCallBacks: c_void;
+        static kCFTypeDictionaryValueCallBacks: c_void;
+    }
+
+    // kCFStringEncodingUTF8 = 0x08000100
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
+    unsafe {
+        // Build the CFString for "AXTrustedCheckOptionPrompt".
+        let key_cstr = b"AXTrustedCheckOptionPrompt\0".as_ptr() as *const c_char;
+        let key = CFStringCreateWithCString(std::ptr::null(), key_cstr, K_CF_STRING_ENCODING_UTF8);
+        if key.is_null() {
+            // Fall back to silent check.
+            return is_accessibility_trusted();
+        }
+
+        let keys = [key];
+        let values = [kCFBooleanTrue];
+
+        let options = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr() as *const *const c_void,
+            values.as_ptr() as *const *const c_void,
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const c_void,
+        );
+
+        let trusted = if options.is_null() {
+            AXIsProcessTrustedWithOptions(std::ptr::null())
+        } else {
+            let t = AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+            t
+        };
+
+        CFRelease(key);
+        trusted
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_accessibility_permission() -> bool {
+    true
+}

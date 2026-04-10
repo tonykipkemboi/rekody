@@ -135,8 +135,7 @@ fn print_ascii_banner() {
         let b = (190.0 + ratio * 65.0) as u8;
         eprintln!("\x1b[38;2;{r};{g};{b}m{line}\x1b[0m");
     }
-    eprintln!("\x1b[38;2;0;210;190mvoice dictation for everyone  ·  v{}\x1b[0m\n",
-        env!("CARGO_PKG_VERSION"));
+    eprintln!("\x1b[38;2;0;210;190mvoice dictation for everyone\x1b[0m\n");
 }
 
 
@@ -839,13 +838,11 @@ fn provider_models_url(name: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn check_macos_permission(service: &str) -> bool {
-    // Best-effort heuristic: try to read TCC database
-    let db = std::path::Path::new("/Library/Application Support/com.apple.TCC/TCC.db");
-    if !db.exists() {
-        return true; // can't tell, assume ok
+    if service == "kTCCServiceAccessibility" {
+        return chamgei_hotkey::is_accessibility_trusted();
     }
-    // Fall back to just returning true — macOS will show a system dialog if missing.
-    let _ = service;
+    // Microphone: best-effort only — AVFoundation check requires an event loop.
+    // Return true to avoid false positives; macOS will prompt on first use.
     true
 }
 
