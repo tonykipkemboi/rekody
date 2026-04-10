@@ -45,6 +45,7 @@ Commands:
   history  Browse dictation history
   doctor   Test STT and LLM provider connectivity
   key      Manage API keys in the system keychain
+  update   Update to the latest release
 
 Options:
   -v, --verbose    Enable debug tracing
@@ -250,4 +251,4 @@ make install                            # build + install to /usr/local/bin
 
 ## License
 
-Dual-licensed under [MIT](LICENSE) or [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0).
+[MIT](LICENSE)
