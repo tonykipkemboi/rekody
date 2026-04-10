@@ -38,27 +38,40 @@ jobs:
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
 
-      # Verify the tarball name built by cmd_update matches what release.yml produces.
-      # Catches any future drift between the two files before it ships.
-      - name: Check release/update filename consistency
+      # Verify tarball names in cmd_update (main.rs) and install.sh match release.yml.
+      # Catches filename drift before it ships.
+      - name: Check release/update/install filename consistency
         run: |
-          # Extract the tarball pattern from cmd_update in main.rs
+          FAIL=0
+
+          # ── cmd_update (main.rs) ──────────────────────────────────────────────
           UPDATE_PATTERN=$(grep 'let tarball = format!' crates/chamgei-core/src/main.rs | \
             sed 's/.*format!("\(.*\)".*/\1/')
-          echo "update pattern: $UPDATE_PATTERN"
+          echo "cmd_update pattern : $UPDATE_PATTERN"
 
-          # It must NOT contain a leading 'v' before the version placeholder
           if echo "$UPDATE_PATTERN" | grep -qE 'chamgei-v\{'; then
-            echo "ERROR: tarball name in cmd_update has a spurious 'v' prefix before the version"
-            exit 1
+            echo "ERROR: cmd_update has spurious 'v' prefix in tarball name"
+            FAIL=1
           fi
-
-          # The arch mapping must use the same names as matrix.arch in release.yml
-          # release.yml uses: aarch64, x86_64
-          # cmd_update must not remap aarch64 -> arm64
           if grep -A2 '"aarch64"' crates/chamgei-core/src/main.rs | grep -q '"arm64"'; then
             echo "ERROR: cmd_update maps aarch64 -> arm64 but release.yml uses aarch64"
-            exit 1
+            FAIL=1
           fi
 
-          echo "OK: tarball name is consistent between release.yml and cmd_update"
+          # ── install.sh ────────────────────────────────────────────────────────
+          INSTALL_TARBALL=$(grep 'TARBALL=' install.sh | grep -v '#' | head -1 | \
+            sed 's/.*TARBALL="\(.*\)".*/\1/')
+          echo "install.sh pattern : $INSTALL_TARBALL"
+
+          # Must use VERSION_NUM (no v prefix) not VERSION
+          if grep 'TARBALL=' install.sh | grep -v '#' | grep -q '"\${VERSION}-'; then
+            echo "ERROR: install.sh uses \${VERSION} (includes 'v') in tarball name — use \${VERSION_NUM}"
+            FAIL=1
+          fi
+          if grep -A2 'arm64|aarch64' install.sh | grep -q 'arm64"'; then
+            echo "ERROR: install.sh maps aarch64 -> arm64 but release.yml uses aarch64"
+            FAIL=1
+          fi
+
+          [ $FAIL -eq 0 ] && echo "OK: all filename patterns are consistent"
+          exit $FAIL

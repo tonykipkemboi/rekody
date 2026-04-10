@@ -54,12 +54,15 @@ case "$OS" in
 esac
 
 case "$ARCH" in
-    arm64|aarch64) ARCH_NAME="arm64" ;;
+    arm64|aarch64) ARCH_NAME="aarch64" ;;
     x86_64)        ARCH_NAME="x86_64" ;;
     *)             echo "  ERROR: Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-TARBALL="chamgei-${VERSION}-${PLATFORM}-${ARCH_NAME}.tar.gz"
+# Release assets are named without the 'v' prefix (e.g. chamgei-0.4.3-macos-aarch64.tar.gz)
+# but the GitHub download path uses the full tag (v0.4.3).
+VERSION_NUM="${VERSION#v}"
+TARBALL="chamgei-${VERSION_NUM}-${PLATFORM}-${ARCH_NAME}.tar.gz"
 DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${TARBALL}"
 
 echo "  Platform:  $PLATFORM ($ARCH_NAME)"
