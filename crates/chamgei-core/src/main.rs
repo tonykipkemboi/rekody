@@ -837,26 +837,65 @@ fn provider_models_url(name: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn check_macos_permission(service: &str) -> bool {
+fn check_macos_permission(service: &str) -> MicCheck {
     if service == "kTCCServiceAccessibility" {
-        return chamgei_hotkey::is_accessibility_trusted();
+        return if chamgei_hotkey::is_accessibility_trusted() {
+            MicCheck::Granted
+        } else {
+            MicCheck::Denied
+        };
     }
-    // Microphone: best-effort only — AVFoundation check requires an event loop.
-    // Return true to avoid false positives; macOS will prompt on first use.
-    true
+    // Microphone: probe the default input device via cpal. This fires the
+    // macOS TCC prompt on first access and returns Denied synchronously if
+    // the user has already blocked access. See chamgei_audio::probe_microphone.
+    match chamgei_audio::probe_microphone() {
+        chamgei_audio::MicStatus::Granted => MicCheck::Granted,
+        chamgei_audio::MicStatus::Denied => MicCheck::Denied,
+        chamgei_audio::MicStatus::NoDevice => MicCheck::NoDevice,
+        chamgei_audio::MicStatus::Unknown => MicCheck::Unknown,
+    }
+}
+
+/// Tri-state result for macOS permission checks in `doctor`.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MicCheck {
+    Granted,
+    Denied,
+    NoDevice,
+    Unknown,
 }
 
 #[cfg(target_os = "macos")]
-fn print_permission(name: &str, ok: bool) {
-    if ok {
-        println!("    {}  {}", style("✓").green().bold(), style(name).white());
-    } else {
-        println!(
-            "    {}  {}  {}",
-            style("✗").red().bold(),
-            style(name).white(),
-            style("open System Settings → Privacy").yellow()
-        );
+fn print_permission(name: &str, status: MicCheck) {
+    match status {
+        MicCheck::Granted => {
+            println!("    {}  {}", style("✓").green().bold(), style(name).white());
+        }
+        MicCheck::Denied => {
+            println!(
+                "    {}  {}  {}",
+                style("✗").red().bold(),
+                style(name).white(),
+                style("open System Settings → Privacy").yellow()
+            );
+        }
+        MicCheck::NoDevice => {
+            println!(
+                "    {}  {}  {}",
+                style("?").yellow().bold(),
+                style(name).white(),
+                style("no input device detected").dim()
+            );
+        }
+        MicCheck::Unknown => {
+            println!(
+                "    {}  {}  {}",
+                style("?").yellow().bold(),
+                style(name).white(),
+                style("could not probe — try recording to test").dim()
+            );
+        }
     }
 }
 

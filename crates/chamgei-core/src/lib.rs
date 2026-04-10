@@ -6,7 +6,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub use chamgei_audio::AudioConfig;
-pub use chamgei_hotkey::{ActivationMode, HotkeyConfig, HotkeyEvent};
+pub use chamgei_hotkey::{ActivationMode, HotkeyConfig, HotkeyEvent, TriggerKey};
 pub use chamgei_inject::InjectionMethod;
 pub use chamgei_stt::WhisperModel;
 
@@ -114,6 +114,16 @@ pub struct ChamgeiConfig {
     /// Set via `llm_enabled = true` / `llm_enabled = false` in config.toml.
     #[serde(default)]
     pub llm_enabled: Option<bool>,
+
+    /// Which key triggers dictation: "option_space" (default) or "fn_key".
+    /// "fn_key" requires System Settings → Keyboard → "Press 🌐 key to" → "Do Nothing".
+    #[serde(default = "default_trigger_key")]
+    pub trigger_key: String,
+
+    /// Maximum continuous recording duration in seconds (deadman switch).
+    /// `0` means no limit. Default: 300 (5 minutes).
+    #[serde(default = "default_max_recording_secs")]
+    pub max_recording_secs: u64,
 }
 
 fn default_stt_engine() -> String {
@@ -122,6 +132,14 @@ fn default_stt_engine() -> String {
 
 fn default_cohere_stt_port() -> u16 {
     8099
+}
+
+fn default_trigger_key() -> String {
+    "option_space".into()
+}
+
+fn default_max_recording_secs() -> u64 {
+    300
 }
 
 impl Default for ChamgeiConfig {
@@ -140,6 +158,8 @@ impl Default for ChamgeiConfig {
             injection_method: "clipboard".into(),
             llm_enabled: None,
             stt_language: None,
+            trigger_key: default_trigger_key(),
+            max_recording_secs: default_max_recording_secs(),
         }
     }
 }
@@ -472,8 +492,14 @@ impl Pipeline {
         tracing::info!("chamgei pipeline starting");
 
         // 1. Parse hotkey config and start listener.
+        let trigger_key = match self.config.trigger_key.to_lowercase().as_str() {
+            "fn_key" | "fn" => TriggerKey::FnKey,
+            _ => TriggerKey::OptionSpace,
+        };
         let hotkey_config = HotkeyConfig {
             activation_mode: parse_activation_mode(&self.config.activation_mode),
+            trigger_key,
+            max_recording_secs: self.config.max_recording_secs,
         };
         let mut hotkey_rx = chamgei_hotkey::start_listener(hotkey_config)?;
         tracing::info!("hotkey listener started");

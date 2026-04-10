@@ -367,22 +367,83 @@ pub fn run_onboarding() -> Result<()> {
                 .status();
         }
 
-        let _: bool = confirm("Open System Settings to grant Microphone permissions?")
-            .initial_value(true)
-            .interact()
-            .map_err(|e| anyhow::anyhow!(e))
-            .inspect(|&open_mic| {
-                if open_mic {
-                    let _ = Command::new("open")
-                        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-                        .status();
-                }
-            })?;
+        // Eagerly probe the microphone. On first access this fires the
+        // macOS TCC prompt while the user is still in the wizard, so they
+        // don't hit a silent failure the first time they try to record.
+        //
+        // Note: on CLI apps, macOS attributes microphone permission to the
+        // "responsible process" — usually the parent terminal (Terminal.app,
+        // iTerm2, Warp, Ghostty). The prompt and the entry in
+        // System Settings → Privacy → Microphone will be under the terminal's
+        // name, not chamgei. That's expected and correct under TCC rules.
+        match chamgei_audio::probe_microphone() {
+            chamgei_audio::MicStatus::Granted => {
+                println!(
+                    "  {} Microphone permission granted.",
+                    console::style("✓").green().bold()
+                );
+            }
+            chamgei_audio::MicStatus::Denied => {
+                println!(
+                    "  {} Microphone permission denied.",
+                    console::style("✗").red().bold()
+                );
+                println!(
+                    "  Grant access to your terminal in System Settings → Privacy & Security → Microphone,"
+                );
+                println!("  then restart chamgei.");
+                let _ = Command::new("open")
+                    .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+                    .status();
+            }
+            chamgei_audio::MicStatus::NoDevice => {
+                println!(
+                    "  {} No microphone detected. Connect one and re-run `chamgei setup`.",
+                    console::style("!").yellow().bold()
+                );
+            }
+            chamgei_audio::MicStatus::Unknown => {
+                println!(
+                    "  {} Microphone probe inconclusive — will prompt on first recording.",
+                    console::style("?").yellow().bold()
+                );
+            }
+        }
+    }
 
+    // --- Step 3b: Hotkey selection ---------------------------------------
+    println!();
+    println!(
+        "  {}",
+        console::style("Hotkey").bold()
+    );
+
+    let trigger_key: &str = select("Choose your dictation trigger key")
+        .item(
+            "option_space",
+            "⌥Space (Option+Space)",
+            "works on all keyboards — conflict risk with Raycast/Alfred",
+        )
+        .item(
+            "fn_key",
+            "Fn / 🌐 Globe key",
+            "recommended for Apple built-in keyboards — no app conflicts",
+        )
+        .interact()
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    #[cfg(target_os = "macos")]
+    if trigger_key == "fn_key" {
+        println!();
         println!(
-            "  \u{1f4a1} Tip: Set System Settings > Keyboard > \"Press \u{1f310} key to\" \u{2192} \"Do Nothing\""
+            "  {} Action required: set System Settings → Keyboard →",
+            console::style("!").yellow().bold()
         );
-        println!("     This ensures the Fn key triggers Chamgei instead of Emoji picker.");
+        println!("    \"Press 🌐 key to\" → \"Do Nothing\"");
+        println!("    Otherwise macOS may intercept the Fn key before chamgei sees it.");
+        let _ = Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.keyboard")
+            .status();
     }
 
     // --- Step 4: Write config --------------------------------------------
@@ -440,6 +501,11 @@ model = "{model}"
 # Edit freely — see https://github.com/tonykipkemboi/chamgei for docs.
 
 activation_mode = "push_to_talk"
+# Dictation trigger key: "option_space" (⌥Space) or "fn_key" (Fn/Globe).
+# fn_key requires System Settings → Keyboard → "Press 🌐 key to" → "Do Nothing".
+trigger_key = "{trigger_key}"
+# Maximum recording duration in seconds (deadman switch). 0 = no limit.
+max_recording_secs = 300
 whisper_model = "{whisper_size}"
 vad_threshold = 0.01
 injection_method = "clipboard"
@@ -449,6 +515,7 @@ injection_method = "clipboard"
 
 {provider_block}
 "#,
+        trigger_key = trigger_key,
         whisper_size = whisper_size,
         stt_line = stt_line,
         deepgram_line = deepgram_line,

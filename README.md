@@ -62,6 +62,19 @@ Options:
 
 > **macOS:** chamgei uses an active `CGEventTap` so `⌥Space` is fully suppressed — it will not insert a non-breaking space into your focused window. Requires **Accessibility** permission (System Settings → Privacy & Security → Accessibility).
 
+### macOS permissions
+
+chamgei needs two TCC permissions:
+
+| Permission | Why | Granted to |
+|------------|-----|------------|
+| **Accessibility** | Suppress `⌥Space` before it reaches the focused app (so it doesn't type a non-breaking space) | `chamgei` binary |
+| **Microphone** | Capture audio for transcription | **Your terminal** (see below) |
+
+> **Why "Terminal.app" (or iTerm / Warp / Ghostty) shows up in your Microphone list instead of chamgei:** macOS TCC attributes microphone access to the *responsible process* of a CLI app, which for terminal-launched binaries is the parent terminal emulator — not chamgei itself. This is a system-level design, not a bug. The permission granted to your terminal applies to every command you run inside it, including chamgei.
+>
+> If you've granted microphone access to your terminal once, chamgei will work. If the permission is missing or denied, `chamgei setup` will prompt for it eagerly; `chamgei doctor` probes the device and shows the current state.
+
 ### Configuration
 
 ```bash

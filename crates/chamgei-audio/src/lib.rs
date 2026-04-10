@@ -41,6 +41,110 @@ pub enum AudioError {
     PermissionDenied,
 }
 
+/// Result of a lightweight microphone permission probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicStatus {
+    /// Default input device is accessible — microphone permission granted.
+    Granted,
+    /// A "permission denied" error was surfaced by the OS.
+    Denied,
+    /// No input device is attached (not the same as denied).
+    NoDevice,
+    /// Some other error (format, hardware, driver). Treated as inconclusive.
+    Unknown,
+}
+
+/// Briefly open the default input device to probe microphone permission.
+///
+/// On macOS this triggers the TCC prompt on first call from a new
+/// "responsible process" (typically the parent terminal). It also surfaces
+/// `Denied` synchronously if the user has already rejected access.
+///
+/// The stream is opened, played, and dropped within ~50 ms. No audio is
+/// retained. Safe to call from any thread — the stream is created and
+/// destroyed on the calling thread so its `!Send` bound is respected.
+pub fn probe_microphone() -> MicStatus {
+    let host = cpal::default_host();
+    let device = match host.default_input_device() {
+        Some(d) => d,
+        None => return MicStatus::NoDevice,
+    };
+
+    // default_input_config() is where cpal-on-macOS enforces microphone
+    // TCC. It returns a "permission denied" error synchronously if the
+    // user has blocked access, and triggers the TCC prompt on first access.
+    let supported_config = match device.default_input_config() {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            return if msg.contains("permission") || msg.contains("denied") {
+                MicStatus::Denied
+            } else {
+                MicStatus::Unknown
+            };
+        }
+    };
+
+    let sample_format = supported_config.sample_format();
+    let input_config: StreamConfig = supported_config.into();
+
+    // Build + play a minimal stream so the OS sees real audio access.
+    // Some macOS versions defer the prompt until stream.play() rather than
+    // default_input_config(), so we do both to be reliable.
+    let err_cb = |err: cpal::StreamError| {
+        tracing::trace!(%err, "mic probe stream error");
+    };
+
+    let stream_result = match sample_format {
+        SampleFormat::F32 => device.build_input_stream(
+            &input_config,
+            |_data: &[f32], _: &cpal::InputCallbackInfo| {},
+            err_cb,
+            None,
+        ),
+        SampleFormat::I16 => device.build_input_stream(
+            &input_config,
+            |_data: &[i16], _: &cpal::InputCallbackInfo| {},
+            err_cb,
+            None,
+        ),
+        SampleFormat::U16 => device.build_input_stream(
+            &input_config,
+            |_data: &[u16], _: &cpal::InputCallbackInfo| {},
+            err_cb,
+            None,
+        ),
+        _ => return MicStatus::Unknown,
+    };
+
+    let stream = match stream_result {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            return if msg.contains("permission") || msg.contains("denied") {
+                MicStatus::Denied
+            } else {
+                MicStatus::Unknown
+            };
+        }
+    };
+
+    if let Err(e) = stream.play() {
+        let msg = e.to_string().to_lowercase();
+        return if msg.contains("permission") || msg.contains("denied") {
+            MicStatus::Denied
+        } else {
+            MicStatus::Unknown
+        };
+    }
+
+    // Hold the stream briefly so macOS registers actual audio access.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    drop(stream);
+    MicStatus::Granted
+}
+
 /// A captured audio segment ready for STT processing.
 #[derive(Debug, Clone)]
 pub struct AudioSegment {
