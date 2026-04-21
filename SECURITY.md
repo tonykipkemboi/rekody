@@ -17,7 +17,7 @@ Only the latest minor release receives security fixes.
 
 Preferred: open a [private security advisory](https://github.com/tonykipkemboi/rekody/security/advisories/new) on GitHub. This keeps the report confidential until a fix is published.
 
-Fallback: email **iamtonykipkemboi@gmail.com** with the subject line `rekody security`.
+Fallback: email **security@rekody.com** with the subject line `rekody security`.
 
 Please include:
 
