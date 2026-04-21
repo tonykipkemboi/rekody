@@ -1,5 +1,6 @@
 ---
 import Mark from './Mark.astro';
+import { version } from '../lib/version';
 
 const cols = [
   {
@@ -41,7 +42,7 @@ const cols = [
         <div class="flex items-center gap-2.5 mb-4">
           <Mark size={28} strokeColor="var(--color-ink)" />
           <span style="font-family:var(--font-serif); font-size:20px; color:var(--color-ink);">rekody</span>
-          <span class="text-[10px] font-mono px-1.5 py-0.5 rounded" style="background:var(--color-teal-soft); color:var(--color-teal); letter-spacing:0.02em;">v0.4.3</span>
+          <span class="text-[10px] font-mono px-1.5 py-0.5 rounded" style="background:var(--color-teal-soft); color:var(--color-teal); letter-spacing:0.02em;">v{version}</span>
         </div>
         <p class="body-serif max-w-sm" style="font-size:14px;">
           Open-source voice dictation for macOS. Hold <span class="key">⌥</span> <span class="key">Space</span> anywhere. Text lands at your cursor — in any app, in 100+ languages.
