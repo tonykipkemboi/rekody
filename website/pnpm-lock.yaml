@@ -12,7 +12,7 @@ importers:
         specifier: ^2.0.1
         version: 2.0.1
       astro:
-        specifier: ^5.7.0
+        specifier: ^5.18.1
         version: 5.18.1(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(rollup@4.60.1)(typescript@5.9.3)
     devDependencies:
       '@astrojs/sitemap':
