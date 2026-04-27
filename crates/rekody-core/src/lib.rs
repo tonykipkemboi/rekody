@@ -15,6 +15,7 @@ pub mod context;
 pub mod corrections;
 pub mod dictionary;
 pub mod history;
+pub mod history_tui;
 pub mod onboarding;
 pub mod prompts;
 pub mod snippets;
@@ -101,6 +102,11 @@ pub struct RekodyConfig {
     pub stt_language: Option<String>,
     /// VAD sensitivity (RMS threshold, ~0.01 for most mics).
     pub vad_threshold: f32,
+    /// If true, capture every audio frame from press to release without VAD
+    /// gating. Useful for transcribing low-energy input (e.g. phone-speaker
+    /// playback into the mic). Default: false (VAD enabled).
+    #[serde(default)]
+    pub record_all_audio: bool,
     /// Text injection method.
     pub injection_method: String,
     /// Whether to run LLM post-processing on transcripts.
@@ -155,6 +161,7 @@ impl Default for RekodyConfig {
             deepgram_api_key: None,
             cohere_stt_port: 8099,
             vad_threshold: 0.01,
+            record_all_audio: false,
             injection_method: "clipboard".into(),
             llm_enabled: None,
             stt_language: None,
@@ -508,6 +515,7 @@ impl Pipeline {
         // 2. Create audio capture and open the device stream.
         let audio_config = AudioConfig {
             vad_threshold: self.config.vad_threshold,
+            record_all_audio: self.config.record_all_audio,
         };
         let audio_capture = rekody_audio::AudioCapture::new(audio_config.clone());
         let mut segment_rx = audio_capture.open(audio_config)?;

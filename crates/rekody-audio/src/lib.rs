@@ -4,7 +4,7 @@
 //! 16kHz mono via rubato, and filters silence using energy-based VAD.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -161,12 +161,18 @@ pub struct AudioConfig {
     /// are considered speech. Typical range: 0.005 - 0.05.
     /// The `default()` value of 0.01 works well for most microphones.
     pub vad_threshold: f32,
+    /// If true, bypass VAD entirely while recording — capture every frame
+    /// from press to release. Useful for transcribing low-energy input
+    /// (e.g. phone-speaker playback into the mic) where VAD would otherwise
+    /// drop everything as silence.
+    pub record_all_audio: bool,
 }
 
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
             vad_threshold: 0.01,
+            record_all_audio: false,
         }
     }
 }
@@ -182,6 +188,10 @@ pub struct AudioCapture {
     shutdown: Arc<AtomicBool>,
     /// Signals the processing thread to flush any buffered speech immediately.
     flush: Arc<AtomicBool>,
+    /// Latest VAD frame RMS energy, stored as `f32::to_bits()`. Updated by
+    /// the processing thread on every VAD frame; read by UI threads to
+    /// render a live audio level meter.
+    latest_rms_bits: Arc<AtomicU32>,
 }
 
 impl AudioCapture {
@@ -192,6 +202,7 @@ impl AudioCapture {
             recording: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             flush: Arc::new(AtomicBool::new(false)),
+            latest_rms_bits: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -210,6 +221,7 @@ impl AudioCapture {
         let recording = Arc::clone(&self.recording);
         let shutdown = Arc::clone(&self.shutdown);
         let flush = Arc::clone(&self.flush);
+        let latest_rms_bits = Arc::clone(&self.latest_rms_bits);
 
         // Use a oneshot channel so the audio thread can report init errors
         // back to the caller synchronously.
@@ -339,6 +351,7 @@ impl AudioCapture {
 
                 // ----- processing loop -----
                 let vad_threshold = config.vad_threshold;
+                let record_all_audio = config.record_all_audio;
                 let needs_resample = input_rate != TARGET_SAMPLE_RATE;
 
                 let chunk_size = 1024_usize;
@@ -376,28 +389,33 @@ impl AudioCapture {
                     }
 
                     // Check if we've been asked to flush buffered speech
-                    // (recording just stopped).
+                    // (recording just stopped). Always emit *something* so the
+                    // UI never silently hangs on Recording — if VAD never
+                    // detected speech, surface that as a user-visible error
+                    // instead of dropping the recording with no signal.
                     if flush.load(Ordering::Relaxed) {
                         flush.store(false, Ordering::Relaxed);
-                        if !speech_buf.is_empty() {
-                            let duration_secs =
-                                speech_buf.len() as f32 / TARGET_SAMPLE_RATE as f32;
-                            if duration_secs >= MIN_SPEECH_DURATION_SECS {
-                                let segment = AudioSegment {
-                                    samples: std::mem::take(&mut speech_buf),
-                                    duration_secs,
-                                };
-                                tracing::info!(
-                                    duration = duration_secs,
-                                    "flushing audio segment (recording stopped)"
-                                );
-                                let _ = segment_tx.send(segment);
-                            } else {
-                                speech_buf.clear();
-                            }
-                            in_speech = false;
-                            consecutive_silence = 0;
+                        let duration_secs =
+                            speech_buf.len() as f32 / TARGET_SAMPLE_RATE as f32;
+                        if duration_secs >= MIN_SPEECH_DURATION_SECS {
+                            let segment = AudioSegment {
+                                samples: std::mem::take(&mut speech_buf),
+                                duration_secs,
+                            };
+                            tracing::info!(
+                                duration = duration_secs,
+                                "flushing audio segment (recording stopped)"
+                            );
+                            let _ = segment_tx.send(segment);
+                        } else {
+                            tracing::warn!(
+                                buffered_secs = duration_secs,
+                                "no speech detected — speak louder or lower vad_threshold"
+                            );
+                            speech_buf.clear();
                         }
+                        in_speech = false;
+                        consecutive_silence = 0;
                     }
 
                     let raw_samples =
@@ -450,7 +468,22 @@ impl AudioCapture {
                     while resampled_buf.len() >= VAD_FRAME_SAMPLES {
                         let frame: Vec<f32> =
                             resampled_buf.drain(..VAD_FRAME_SAMPLES).collect();
+
+                        // VAD-bypass mode: while recording is active, append
+                        // every frame unconditionally. Used for low-energy
+                        // input (speaker→mic playback) where VAD would drop
+                        // everything as silence. Outside of recording windows,
+                        // fall through to the normal VAD logic so idle
+                        // silence isn't accumulated forever.
+                        if record_all_audio && currently_recording {
+                            in_speech = true;
+                            consecutive_silence = 0;
+                            speech_buf.extend_from_slice(&frame);
+                            continue;
+                        }
+
                         let rms = compute_rms(&frame);
+                        latest_rms_bits.store(rms.to_bits(), Ordering::Relaxed);
                         let is_speech = rms > vad_threshold;
 
                         if is_speech {
@@ -561,6 +594,22 @@ impl AudioCapture {
     /// Returns `true` if currently recording.
     pub fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Relaxed)
+    }
+
+    /// Returns the most recent VAD frame's RMS energy. Updated continuously
+    /// by the processing thread (~33x/sec at 16kHz with 30ms frames),
+    /// regardless of whether recording is active. Useful for driving a
+    /// live audio level meter in the UI.
+    pub fn latest_rms(&self) -> f32 {
+        f32::from_bits(self.latest_rms_bits.load(Ordering::Relaxed))
+    }
+
+    /// Returns a clone of the shared `Arc<AtomicU32>` holding the latest
+    /// RMS bits. Lets callers hold their own reference (e.g. move into a
+    /// UI polling task) without keeping an `AudioCapture` borrow alive.
+    /// Decode with `f32::from_bits(handle.load(Ordering::Relaxed))`.
+    pub fn rms_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.latest_rms_bits)
     }
 
     /// Permanently shut down the capture thread. After calling this the

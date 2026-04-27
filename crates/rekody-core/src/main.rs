@@ -24,9 +24,6 @@ use rekody_core::{Pipeline, RekodyConfig, load_config};
     name = "rekody",
     version = env!("CARGO_PKG_VERSION"),
     about = "Voice dictation — speak, it types",
-    long_about = "rekody listens for your voice while you hold ⌥Space, \
-transcribes it, optionally cleans it up with an LLM, \
-and types the result into the focused window.",
     disable_help_subcommand = true,
 )]
 struct Cli {
@@ -36,6 +33,10 @@ struct Cli {
     /// Enable verbose tracing output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Bypass VAD — capture every frame (use for media-playback transcription)
+    #[arg(long)]
+    record_all_audio: bool,
 }
 
 #[derive(Subcommand)]
@@ -70,6 +71,9 @@ enum Cmd {
         /// Copy the Nth most-recent entry to the clipboard (1 = latest)
         #[arg(long, value_name = "N")]
         copy: Option<usize>,
+        /// Open the interactive history browser (search, copy, navigate)
+        #[arg(short, long)]
+        interactive: bool,
     },
     /// Check STT and LLM provider connectivity
     Doctor,
@@ -115,43 +119,46 @@ enum KeyCmd {
 // ── ASCII banner ─────────────────────────────────────────────────────────────
 
 fn print_ascii_banner() {
-    // "rekody" rendered as a block banner, gradient teal→blue.
+    // "rekody" rendered in figlet `nancyj`, gradient teal→blue.
     const ART: &[&str] = &[
-        r#"                 oooo                       .o8                  "#,
-        r#"                 `888                      "888                  "#,
-        r#" oooo d8b .ooooo. 888  oooo  .ooooo.   .oooo888  oooo    ooo     "#,
-        r#" `888""8P d88' `88b 888 .8P'  d88' `88b d88' `888   `88.  .8'    "#,
-        r#"  888     888ooo888 888888.   888   888 888   888    `88..8'     "#,
-        r#"  888     888    .o 888 `88b. 888   888 888   888     `888'      "#,
-        r#" d888b    `Y8bod8P'o888o o888o`Y8bod8P' `Y8bod88P"     .8'       "#,
-        r#"                                                   .o..P'        "#,
-        r#"                                                   `Y8P'         "#,
+        r#"                  dP                      dP          "#,
+        r#"                  88                      88          "#,
+        r#"88d888b. .d8888b. 88  .dP  .d8888b. .d888b88 dP    dP "#,
+        r#"88'  `88 88ooood8 88888"   88'  `88 88'  `88 88    88 "#,
+        r#"88       88.  ... 88  `8b. 88.  .88 88.  .88 88.  .88 "#,
+        r#"dP       `88888P' dP   `YP `88888P' `88888P8 `8888P88 "#,
+        r#"                                                  .88 "#,
+        r#"                                              d8888P  "#,
     ];
+    // Gradient stays inside the rekody teal family:
+    //   top:    #4FB8C5  (lightened brand teal — luminous on dark terminals)
+    //   bottom: #20808D  (brand teal, exact)
+    // Ends on-brand; anchors the eye on the canonical color.
+    const TOP: (u8, u8, u8) = (0x4F, 0xB8, 0xC5);
+    const BOT: (u8, u8, u8) = (0x20, 0x80, 0x8D);
     let n = ART.len();
     for (i, line) in ART.iter().enumerate() {
-        let ratio = i as f32 / (n - 1) as f32;
-        let r = (ratio * 50.0) as u8;
-        let g = (210.0 - ratio * 60.0) as u8;
-        let b = (190.0 + ratio * 65.0) as u8;
+        let t = i as f32 / (n - 1) as f32;
+        let r = (TOP.0 as f32 + (BOT.0 as f32 - TOP.0 as f32) * t) as u8;
+        let g = (TOP.1 as f32 + (BOT.1 as f32 - TOP.1 as f32) * t) as u8;
+        let b = (TOP.2 as f32 + (BOT.2 as f32 - TOP.2 as f32) * t) as u8;
         eprintln!("\x1b[38;2;{r};{g};{b}m{line}\x1b[0m");
     }
-    eprintln!("\x1b[38;2;0;210;190mvoice dictation for everyone\x1b[0m\n");
+    // Tagline in brand teal, exact.
+    eprintln!(
+        "\x1b[38;2;{};{};{}mvoice dictation for everyone\x1b[0m\n",
+        BOT.0, BOT.1, BOT.2
+    );
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Print banner when the user asks for help so it appears above the usage.
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_ascii_banner();
-    }
-
     let cli = Cli::parse();
 
     match cli.command {
-        None => run_dictation(cli.verbose).await,
+        None => run_dictation(cli.verbose, cli.record_all_audio).await,
         Some(Cmd::Setup) => cmd_setup(),
         Some(Cmd::Config { action }) => cmd_config(action),
         Some(Cmd::History {
@@ -162,7 +169,8 @@ async fn main() -> Result<()> {
             stats,
             json,
             copy,
-        }) => cmd_history(count, search, app, full, stats, json, copy),
+            interactive,
+        }) => cmd_history(count, search, app, full, stats, json, copy, interactive),
         Some(Cmd::Doctor) => cmd_doctor().await,
         Some(Cmd::Key { action }) => cmd_key(action),
         Some(Cmd::Update { check }) => cmd_update(check).await,
@@ -211,43 +219,37 @@ fn cmd_config(action: Option<ConfigCmd>) -> Result<()> {
 }
 
 fn print_config(config: &RekodyConfig, path: &Option<String>) {
+    let rule = "─".repeat(48);
+    let subtitle = match path {
+        Some(p) => p.clone(),
+        None => "(no config file — using defaults)".to_string(),
+    };
+
     println!();
+    // Top: corner + integrated title.
     println!(
-        "  {}  {}",
-        style("Configuration").bold(),
-        style("─".repeat(42)).dim()
+        "  {BRAND}╭─{RESET}  {BRAND_LIGHT}{BOLD}rekody config{RESET}  {DIM}{}{RESET}",
+        subtitle
     );
-    println!();
+    println!("  {BRAND}│{RESET}");
 
-    match path {
-        Some(p) => println!("  {}  {}", style("File  ").dim(), style(p).cyan()),
-        None => println!(
-            "  {}  {}",
-            style("File  ").dim(),
-            style("(no config file — using defaults)").yellow()
-        ),
-    }
-    println!();
-
-    // STT
+    // STT section
     let stt_display = stt_display_name(config);
-    println!("  {}", style("STT").bold());
+    println!("  {BRAND}│{RESET}   {BRAND_LIGHT}{BOLD}STT{RESET}");
     println!(
-        "    {}  {}",
-        style("Engine").dim(),
-        style(&stt_display).white()
+        "  {BRAND}│{RESET}     {DIM}Engine{RESET}  {CREAM}{BOLD}{}{RESET}",
+        stt_display
     );
     if let Some(key) = &config.deepgram_api_key {
         println!(
-            "    {}  {}",
-            style("Key   ").dim(),
-            style(mask_key(key)).dim()
+            "  {BRAND}│{RESET}     {DIM}Key   {RESET}  {DIM}{}{RESET}",
+            mask_key(key)
         );
     }
-    println!();
+    println!("  {BRAND}│{RESET}");
 
-    // LLM
-    println!("  {}", style("LLM Providers").bold());
+    // LLM Providers section
+    println!("  {BRAND}│{RESET}   {BRAND_LIGHT}{BOLD}LLM Providers{RESET}");
     if config.providers.is_empty() {
         // Legacy
         let has_groq = config.groq_api_key.as_ref().is_some_and(|k| !k.is_empty());
@@ -257,59 +259,61 @@ fn print_config(config: &RekodyConfig, path: &Option<String>) {
             .is_some_and(|k| !k.is_empty());
         if has_groq {
             println!(
-                "    {}  {}",
-                style("1").dim(),
-                style("groq  (legacy key)").white()
+                "  {BRAND}│{RESET}     {DIM}1{RESET}  {CREAM}{BOLD}groq{RESET}  {DIM}(legacy key){RESET}"
             );
         }
         if has_cerebras {
             println!(
-                "    {}  {}",
-                style("2").dim(),
-                style("cerebras  (legacy key)").white()
+                "  {BRAND}│{RESET}     {DIM}2{RESET}  {CREAM}{BOLD}cerebras{RESET}  {DIM}(legacy key){RESET}"
             );
         }
         if !has_groq && !has_cerebras {
-            println!(
-                "    {}",
-                style("none configured  — run: rekody setup").yellow()
-            );
+            println!("  {BRAND}│{RESET}     {WARN}none configured  — run: rekody setup{RESET}");
         }
     } else {
         for (i, p) in config.providers.iter().enumerate() {
             let key_hint = if p.api_key.is_empty() {
-                style("(no key)").yellow().to_string()
+                format!("{WARN}(no key){RESET}")
             } else {
-                style(mask_key(&p.api_key)).dim().to_string()
+                format!("{DIM}{}{RESET}", mask_key(&p.api_key))
             };
             println!(
-                "    {}  {}/{} {}",
-                style(format!("{}", i + 1)).dim(),
-                style(&p.name).white(),
-                style(&p.model).white(),
+                "  {BRAND}│{RESET}     {DIM}{}{RESET}  {CREAM}{BOLD}{}/{}{RESET}  {}",
+                i + 1,
+                p.name,
+                p.model,
                 key_hint,
             );
         }
     }
-    println!();
+    println!("  {BRAND}│{RESET}");
 
-    // Options
-    println!("  {}", style("Options").bold());
+    // Options section
+    println!("  {BRAND}│{RESET}   {BRAND_LIGHT}{BOLD}Options{RESET}");
     println!(
-        "    {}  {}",
-        style("Mode  ").dim(),
-        style(format_activation_mode(&config.activation_mode)).white()
+        "  {BRAND}│{RESET}     {DIM}Mode  {RESET}  {CREAM}{BOLD}{}{RESET}",
+        format_activation_mode(&config.activation_mode)
     );
     println!(
-        "    {}  {}",
-        style("Inject").dim(),
-        style(&config.injection_method).white()
+        "  {BRAND}│{RESET}     {DIM}Inject{RESET}  {CREAM}{BOLD}{}{RESET}",
+        config.injection_method
     );
     println!(
-        "    {}  {}",
-        style("VAD   ").dim(),
-        style(format!("{}", config.vad_threshold)).white()
+        "  {BRAND}│{RESET}     {DIM}VAD   {RESET}  {CREAM}{BOLD}{}{RESET}",
+        config.vad_threshold
     );
+    let vad_mode = if config.record_all_audio {
+        "off (record_all_audio = true — every frame captured, no gating)"
+    } else {
+        "on (RMS gating; pass --record-all-audio to bypass for one session)"
+    };
+    println!(
+        "  {BRAND}│{RESET}     {DIM}Gate  {RESET}  {CREAM}{}{RESET}",
+        vad_mode
+    );
+    println!("  {BRAND}│{RESET}");
+    // Bottom: corner + rule, closing the card.
+    println!("  {BRAND}╰{}{RESET}", rule);
     println!();
 }
 
@@ -324,6 +328,7 @@ fn mask_key(key: &str) -> String {
 
 // ── Subcommand: history ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_history(
     count: usize,
     search: Option<String>,
@@ -332,9 +337,14 @@ fn cmd_history(
     stats: bool,
     json_out: bool,
     copy_nth: Option<usize>,
+    interactive: bool,
 ) -> Result<()> {
     let history = rekody_core::history::History::load();
     let all = history.entries();
+
+    if interactive {
+        return rekody_core::history_tui::run(&history);
+    }
 
     // --copy N: copy the Nth most-recent entry to clipboard and exit.
     if let Some(n) = copy_nth {
@@ -584,29 +594,31 @@ fn cmd_history(
 async fn cmd_doctor() -> Result<()> {
     let config_path = find_config_path();
     let config = load_config_or_default(&config_path);
+    let rule = "─".repeat(48);
 
     println!();
+    // Top: corner + integrated title.
     println!(
-        "  {}  {}",
-        style("Provider Health Check").bold(),
-        style("─".repeat(31)).dim()
+        "  {BRAND}╭─{RESET}  {BRAND_LIGHT}{BOLD}rekody doctor{RESET}  {DIM}provider health check{RESET}"
     );
-    println!();
+    println!("  {BRAND}│{RESET}");
 
     // STT check
-    println!("  {}", style("STT").bold());
+    println!("  {BRAND}│{RESET}   {BRAND_LIGHT}{BOLD}STT{RESET}");
     let stt_name = stt_display_name(&config);
     match config.stt_engine.to_lowercase().as_str() {
         "deepgram" => {
             let key = config.deepgram_api_key.as_deref().unwrap_or("");
             if key.is_empty() {
                 println!(
-                    "    {}  {}  {}",
-                    style("✗").red().bold(),
-                    style(&stt_name).white(),
-                    style("no API key — run: rekody key set deepgram").yellow()
+                    "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}no API key — run: rekody key set deepgram{RESET}",
+                    stt_name
                 );
             } else {
+                println!(
+                    "  {BRAND}│{RESET}     {WARN}{BOLD}…{RESET}  {CREAM}{}{RESET}  {DIM}checking…{RESET}",
+                    stt_name
+                );
                 let t = Instant::now();
                 let ok = reqwest::Client::new()
                     .get("https://api.deepgram.com/v1/projects")
@@ -616,19 +628,17 @@ async fn cmd_doctor() -> Result<()> {
                     .map(|r| r.status().is_success())
                     .unwrap_or(false);
                 let ms = t.elapsed().as_millis();
+                // Overwrite the previous line with the final result.
+                print!("\x1b[1A\x1b[2K");
                 if ok {
                     println!(
-                        "    {}  {}  {}",
-                        style("✓").green().bold(),
-                        style(&stt_name).white(),
-                        style(format!("{}ms", ms)).dim()
+                        "  {BRAND}│{RESET}     {OK}{BOLD}✓{RESET}  {CREAM}{}{RESET}  {DIM}{}ms{RESET}",
+                        stt_name, ms
                     );
                 } else {
                     println!(
-                        "    {}  {}  {}",
-                        style("✗").red().bold(),
-                        style(&stt_name).white(),
-                        style("auth failed — run: rekody key set deepgram").yellow()
+                        "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}auth failed — run: rekody key set deepgram{RESET}",
+                        stt_name
                     );
                 }
             }
@@ -644,24 +654,19 @@ async fn cmd_doctor() -> Result<()> {
         }
         _ => {
             println!(
-                "    {}  {}",
-                style("○").cyan(),
-                style("Local Whisper (no network check needed)").dim()
+                "  {BRAND}│{RESET}     {BRAND_LIGHT}○{RESET}  {DIM}Local Whisper (no network check needed){RESET}"
             );
         }
     }
-    println!();
+    println!("  {BRAND}│{RESET}");
 
     // LLM providers
-    println!("  {}", style("LLM").bold());
+    println!("  {BRAND}│{RESET}   {BRAND_LIGHT}{BOLD}LLM{RESET}");
     if config.providers.is_empty()
         && config.groq_api_key.is_none()
         && config.cerebras_api_key.is_none()
     {
-        println!(
-            "    {}",
-            style("none configured — run: rekody setup").yellow()
-        );
+        println!("  {BRAND}│{RESET}     {WARN}none configured — run: rekody setup{RESET}");
     } else if !config.providers.is_empty() {
         for p in &config.providers {
             match p.name.as_str() {
@@ -670,25 +675,17 @@ async fn cmd_doctor() -> Result<()> {
                     let t = Instant::now();
                     let ok = reqwest::Client::new().get(url).send().await.is_ok();
                     let ms = t.elapsed().as_millis();
-                    let status = if ok {
-                        format!(
-                            "{}  {}",
-                            style("✓").green().bold(),
-                            style(format!("{}ms", ms)).dim()
-                        )
+                    if ok {
+                        println!(
+                            "  {BRAND}│{RESET}     {OK}{BOLD}✓{RESET}  {CREAM}{}/{RESET}{DIM}{}{RESET}  {DIM}{}ms{RESET}",
+                            p.name, p.model, ms
+                        );
                     } else {
-                        format!(
-                            "{}  {}",
-                            style("✗").red().bold(),
-                            style("not running").yellow()
-                        )
-                    };
-                    println!(
-                        "    {}  {}/{}",
-                        status,
-                        style(&p.name).white(),
-                        style(&p.model).dim()
-                    );
+                        println!(
+                            "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}/{RESET}{DIM}{}{RESET}  {WARN}not running{RESET}",
+                            p.name, p.model
+                        );
+                    }
                 }
                 "gemini" => {
                     let url = "https://generativelanguage.googleapis.com/v1beta/openai/models";
@@ -725,10 +722,10 @@ async fn cmd_doctor() -> Result<()> {
                 .await;
         }
     }
-    println!();
+    println!("  {BRAND}│{RESET}");
 
     // System
-    println!("  {}", style("System").bold());
+    println!("  {BRAND}│{RESET}   {BRAND_LIGHT}{BOLD}System{RESET}");
     #[cfg(target_os = "macos")]
     {
         let mic = check_macos_permission("kTCCServiceMicrophone");
@@ -739,11 +736,12 @@ async fn cmd_doctor() -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         println!(
-            "    {}  {}",
-            style("○").cyan(),
-            style("System checks not available on this platform").dim()
+            "  {BRAND}│{RESET}     {BRAND_LIGHT}○{RESET}  {DIM}System checks not available on this platform{RESET}"
         );
     }
+    println!("  {BRAND}│{RESET}");
+    // Bottom: corner + rule, closing the card.
+    println!("  {BRAND}╰{}{RESET}", rule);
     println!();
 
     Ok(())
@@ -752,10 +750,8 @@ async fn cmd_doctor() -> Result<()> {
 async fn check_openai_compat_provider(label: &str, url: &str, key: &str) {
     if key.is_empty() {
         println!(
-            "    {}  {}  {}",
-            style("✗").red().bold(),
-            style(label).white(),
-            style("no API key — run: rekody key set <provider>").yellow()
+            "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}no API key — run: rekody key set <provider>{RESET}",
+            label
         );
         return;
     }
@@ -770,17 +766,13 @@ async fn check_openai_compat_provider(label: &str, url: &str, key: &str) {
     let ms = t.elapsed().as_millis();
     if ok {
         println!(
-            "    {}  {}  {}",
-            style("✓").green().bold(),
-            style(label).white(),
-            style(format!("{}ms", ms)).dim()
+            "  {BRAND}│{RESET}     {OK}{BOLD}✓{RESET}  {CREAM}{}{RESET}  {DIM}{}ms{RESET}",
+            label, ms
         );
     } else {
         println!(
-            "    {}  {}  {}",
-            style("✗").red().bold(),
-            style(label).white(),
-            style("auth failed — check your API key").yellow()
+            "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}auth failed — check your API key{RESET}",
+            label
         );
     }
 }
@@ -788,10 +780,8 @@ async fn check_openai_compat_provider(label: &str, url: &str, key: &str) {
 async fn check_openai_compat_provider_keyed(label: &str, url: &str, key: &str, header: &str) {
     if key.is_empty() {
         println!(
-            "    {}  {}  {}",
-            style("✗").red().bold(),
-            style(label).white(),
-            style("no API key").yellow()
+            "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}no API key{RESET}",
+            label
         );
         return;
     }
@@ -806,17 +796,13 @@ async fn check_openai_compat_provider_keyed(label: &str, url: &str, key: &str, h
     let ms = t.elapsed().as_millis();
     if ok {
         println!(
-            "    {}  {}  {}",
-            style("✓").green().bold(),
-            style(label).white(),
-            style(format!("{}ms", ms)).dim()
+            "  {BRAND}│{RESET}     {OK}{BOLD}✓{RESET}  {CREAM}{}{RESET}  {DIM}{}ms{RESET}",
+            label, ms
         );
     } else {
         println!(
-            "    {}  {}  {}",
-            style("✗").red().bold(),
-            style(label).white(),
-            style("auth failed — check your API key").yellow()
+            "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}auth failed — check your API key{RESET}",
+            label
         );
     }
 }
@@ -869,30 +855,27 @@ enum MicCheck {
 fn print_permission(name: &str, status: MicCheck) {
     match status {
         MicCheck::Granted => {
-            println!("    {}  {}", style("✓").green().bold(), style(name).white());
+            println!(
+                "  {BRAND}│{RESET}     {OK}{BOLD}✓{RESET}  {CREAM}{}{RESET}",
+                name
+            );
         }
         MicCheck::Denied => {
             println!(
-                "    {}  {}  {}",
-                style("✗").red().bold(),
-                style(name).white(),
-                style("open System Settings → Privacy").yellow()
+                "  {BRAND}│{RESET}     {SLOW}{BOLD}✗{RESET}  {CREAM}{}{RESET}  {WARN}open System Settings → Privacy{RESET}",
+                name
             );
         }
         MicCheck::NoDevice => {
             println!(
-                "    {}  {}  {}",
-                style("?").yellow().bold(),
-                style(name).white(),
-                style("no input device detected").dim()
+                "  {BRAND}│{RESET}     {WARN}{BOLD}…{RESET}  {CREAM}{}{RESET}  {DIM}no input device detected{RESET}",
+                name
             );
         }
         MicCheck::Unknown => {
             println!(
-                "    {}  {}  {}",
-                style("?").yellow().bold(),
-                style(name).white(),
-                style("could not probe — try recording to test").dim()
+                "  {BRAND}│{RESET}     {WARN}{BOLD}…{RESET}  {CREAM}{}{RESET}  {DIM}could not probe — try recording to test{RESET}",
+                name
             );
         }
     }
@@ -1177,13 +1160,12 @@ fn cmd_key(action: KeyCmd) -> Result<()> {
             ),
         },
         KeyCmd::List => {
+            let rule = "─".repeat(48);
             println!();
             println!(
-                "  {}  {}",
-                style("Stored Keys").bold(),
-                style("─".repeat(40)).dim()
+                "  {BRAND}╭─{RESET}  {BRAND_LIGHT}{BOLD}rekody keys{RESET}  {DIM}keychain status{RESET}"
             );
-            println!();
+            println!("  {BRAND}│{RESET}");
             let providers = &[
                 "groq",
                 "deepgram",
@@ -1197,22 +1179,28 @@ fn cmd_key(action: KeyCmd) -> Result<()> {
             ];
             let mut any = false;
             for p in providers {
-                if let Ok(key) = get_keychain_key(p) {
-                    println!(
-                        "    {}  {}  {}",
-                        style("✓").green(),
-                        style(*p).white(),
-                        style(mask_key(&key)).dim()
-                    );
-                    any = true;
+                match get_keychain_key(p) {
+                    Ok(key) if !key.is_empty() => {
+                        println!(
+                            "  {BRAND}│{RESET}   {CREAM}{BOLD}{:<11}{RESET}  {OK}✓ stored{RESET}  {DIM}{}{RESET}",
+                            p,
+                            mask_key(&key)
+                        );
+                        any = true;
+                    }
+                    _ => {
+                        println!("  {BRAND}│{RESET}   {CREAM}{:<11}{RESET}  {DIM}—{RESET}", p);
+                    }
                 }
             }
             if !any {
+                println!("  {BRAND}│{RESET}");
                 println!(
-                    "    {}",
-                    style("No keys stored. Run: rekody key set <provider>").dim()
+                    "  {BRAND}│{RESET}   {DIM}No keys stored. Run: rekody key set <provider>{RESET}"
                 );
             }
+            println!("  {BRAND}│{RESET}");
+            println!("  {BRAND}╰{}{RESET}", rule);
             println!();
         }
     }
@@ -1314,7 +1302,7 @@ fn format_activation_mode(mode: &str) -> &str {
 
 // ── Live dictation pipeline ──────────────────────────────────────────────────
 
-async fn run_dictation(verbose: bool) -> Result<()> {
+async fn run_dictation(verbose: bool, record_all_audio_flag: bool) -> Result<()> {
     // If no config exists, run onboarding first.
     if onboarding::needs_onboarding() {
         onboarding::run_onboarding()?;
@@ -1325,6 +1313,11 @@ async fn run_dictation(verbose: bool) -> Result<()> {
 
     // Pull missing API keys from the keychain into config at runtime.
     inject_keychain_keys(&mut config);
+
+    // CLI flag wins over config: --record-all-audio always forces it on.
+    if record_all_audio_flag {
+        config.record_all_audio = true;
+    }
 
     // Print the startup banner.
     print_banner(&config);
@@ -1343,9 +1336,28 @@ async fn run_dictation(verbose: bool) -> Result<()> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| format!("{},rekody=debug", level).parse().unwrap());
 
+    // DEBUG: tee tracing events to file when REKODY_DEBUG_LOG=<path> is set.
+    let debug_layer = std::env::var("REKODY_DEBUG_LOG")
+        .ok()
+        .and_then(|p| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .ok()
+        })
+        .map(|f| {
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::sync::Mutex::new(f))
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_ansi(false)
+        });
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(ui_layer)
+        .with(debug_layer)
         .init();
 
     let pipeline = Pipeline::new(config)?;
@@ -1407,72 +1419,60 @@ fn inject_keychain_keys(config: &mut RekodyConfig) {
 // ── Startup banner ───────────────────────────────────────────────────────────
 
 fn print_banner(config: &RekodyConfig) {
-    println!();
+    // Card-style banner: a brand-teal left rail + integrated title, closed
+    // with a bottom rule. The right edge is open (no right border) so we
+    // never have to do ANSI-aware width math. The card structure anchors the
+    // info block; the inline status line below it stays unbordered to read
+    // as a live element rather than another panel row.
+    const RULE_W: usize = 48;
+    let rule = "─".repeat(RULE_W);
 
-    // Title line
-    println!(
-        "  {}  {}",
-        style(format!("rekody  v{}", env!("CARGO_PKG_VERSION")))
-            .cyan()
-            .bold(),
-        style("─".repeat(40)).dim(),
-    );
-    println!();
-
-    // STT
     let stt = stt_display_name(config);
-    println!(
-        "  {}  {}",
-        style("STT   ").dim(),
-        style(&stt).white().bold()
-    );
 
-    // LLM — show effective state, not just what's configured.
     let llm_active = rekody_core::has_llm_providers(config);
-    if llm_active {
+    let llm_line = if llm_active {
         let names: Vec<_> = config
             .providers
             .iter()
             .map(|p| format!("{}/{}", p.name, p.model))
             .collect();
-        println!(
-            "  {}  {}",
-            style("LLM   ").dim(),
-            style(names.join("  ›  ")).white()
-        );
+        format!(
+            "{CREAM}{}{RESET}",
+            names.join(&format!("  {BRAND}›{RESET}  "))
+        )
+    } else if config.providers.is_empty() {
+        format!("{DIM}none{RESET}")
+    } else if config.llm_enabled == Some(false) {
+        format!("{DIM}off{RESET}")
     } else {
-        let reason = if config.providers.is_empty() {
-            style("none").dim().to_string()
-        } else if config.llm_enabled == Some(false) {
-            style("off").dim().to_string()
-        } else {
-            // Auto-disabled because Deepgram smart_format handles formatting.
-            format!(
-                "{}  {}",
-                style("none").dim(),
-                style("(Deepgram smart_format handles formatting)").dim()
-            )
-        };
-        println!("  {}  {}", style("LLM   ").dim(), reason);
-    }
+        format!("{DIM}none{RESET}  {SUBTLE}(Deepgram smart_format handles formatting){RESET}")
+    };
 
-    // Mode
-    println!(
-        "  {}  {}",
-        style("Mode  ").dim(),
-        style(format_activation_mode(&config.activation_mode)).white()
-    );
+    let mode_short = match config.activation_mode.to_lowercase().as_str() {
+        "toggle" => "toggle",
+        _ => "push-to-talk",
+    };
 
     println!();
-    println!("  {}", style("─".repeat(52)).dim());
+    // Top: corner + integrated title.
     println!(
-        "  {}  {}   {}  {}",
-        style("⌥Space").white().bold(),
-        style("hold to dictate").dim(),
-        style("Ctrl+C").white().bold(),
-        style("quit").dim(),
+        "  {BRAND}╭─{RESET}  {BRAND_LIGHT}{BOLD}rekody{RESET}  {DIM}v{}{RESET}",
+        env!("CARGO_PKG_VERSION"),
     );
-    println!("  {}", style("─".repeat(52)).dim());
+    println!("  {BRAND}│{RESET}");
+    // Body: left rail + content rows.
+    println!(
+        "  {BRAND}│{RESET}   {DIM}STT  {RESET}  {CREAM}{BOLD}{}{RESET}",
+        stt
+    );
+    println!("  {BRAND}│{RESET}   {DIM}LLM  {RESET}  {}", llm_line);
+    println!(
+        "  {BRAND}│{RESET}   {DIM}Mode {RESET}  {CREAM}{}{RESET}",
+        mode_short
+    );
+    println!("  {BRAND}│{RESET}");
+    // Bottom: corner + rule, closing the card.
+    println!("  {BRAND}╰{}{RESET}", rule);
     println!();
 }
 
@@ -1501,22 +1501,51 @@ impl SessionStats {
     fn summary_line(&self) -> String {
         let count = self.dictation_count.load(Ordering::Relaxed);
         let secs = self.total_audio_secs.lock().map(|s| *s).unwrap_or(0.0);
+        let label = if count == 1 {
+            "dictation"
+        } else {
+            "dictations"
+        };
         format!(
-            "     {} {} {} · {:.1}s audio",
-            style("Session:").dim(),
-            style(count).dim(),
-            style(if count == 1 {
-                "dictation"
-            } else {
-                "dictations"
-            })
-            .dim(),
+            "     {SUBTLE}session{RESET}  {DIM}{} {} {sep} {:.1}s audio{RESET}",
+            count,
+            label,
             secs,
+            sep = sep()
         )
     }
 }
 
 // ── Spinner style helpers ────────────────────────────────────────────────────
+//
+// Inline status panel for the live dictation pipeline. Stays one line tall so
+// the terminal remains usable around it. Visual language matches the rekody
+// brand palette: brand teal #20808D (BRAND), lighter teal #4FB8C5 (BRAND_LIGHT),
+// cream #FBFAF4 (CREAM) for emphasis text, dim gray for secondary labels.
+// Latency dot semantics match the history TUI: <5s green, <15s amber, else red.
+
+const BRAND: &str = "\x1b[38;2;32;128;141m"; // #20808D
+const BRAND_LIGHT: &str = "\x1b[38;2;79;184;197m"; // #4FB8C5
+const CREAM: &str = "\x1b[38;2;251;250;244m"; // #FBFAF4
+const DIM: &str = "\x1b[38;2;119;119;119m";
+const SUBTLE: &str = "\x1b[38;2;85;85;85m";
+const OK: &str = "\x1b[38;2;107;203;119m";
+const WARN: &str = "\x1b[38;2;230;180;80m";
+const SLOW: &str = "\x1b[38;2;217;107;107m";
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
+
+fn latency_color(total_ms: u64) -> &'static str {
+    match total_ms {
+        0..=4_999 => OK,
+        5_000..=14_999 => WARN,
+        _ => SLOW,
+    }
+}
+
+fn sep() -> String {
+    format!("{DIM}·{RESET}")
+}
 
 /// Single shared style used for every state — avoids the new-line glitch
 /// caused by swapping styles while `enable_steady_tick` is running.
@@ -1531,77 +1560,69 @@ fn set_spinner_msg(spinner: &ProgressBar, msg: impl Into<String>) {
 }
 
 fn set_idle_style(spinner: &ProgressBar) {
-    set_spinner_msg(
-        spinner,
-        format!(
-            "{}  {}",
-            style("○").cyan(),
-            style("Ready — hold ⌥Space to dictate").dim(),
-        ),
+    // Each hotkey is a tight key→action pair; pairs are separated by a wider
+    // gap with a brand-dim divider so it's obvious ⌥Space and Ctrl+C are
+    // independent chords, not one combined sequence.
+    let msg = format!(
+        "{BRAND}◯{RESET}  {BRAND_LIGHT}{BOLD}rekody{RESET}    \
+         {CREAM}{BOLD}⌥Space{RESET} {DIM}hold to dictate{RESET}    {sep}    \
+         {CREAM}{BOLD}Ctrl+C{RESET} {DIM}quit{RESET}",
+        sep = sep()
     );
+    set_spinner_msg(spinner, msg);
 }
 
 fn set_recording_style(spinner: &ProgressBar, elapsed_secs: Option<f64>) {
     let msg = match elapsed_secs {
         Some(s) => format!(
-            "{}  {}  {}",
-            style("●").red().bold(),
-            style("Recording").red().bold(),
-            style(format!("{:.1}s", s)).red().dim(),
+            "{SLOW}{BOLD}●{RESET}  {SLOW}{BOLD}recording{RESET}  {sep}  {SLOW}{:.1}s{RESET}  {sep}  {DIM}release {RESET}{CREAM}{BOLD}⌥Space{RESET}{DIM} to stop{RESET}",
+            s,
+            sep = sep()
         ),
         None => format!(
-            "{}  {}",
-            style("●").red().bold(),
-            style("Recording").red().bold(),
+            "{SLOW}{BOLD}●{RESET}  {SLOW}{BOLD}recording{RESET}  {sep}  {DIM}release {RESET}{CREAM}{BOLD}⌥Space{RESET}{DIM} to stop{RESET}",
+            sep = sep()
         ),
     };
     set_spinner_msg(spinner, msg);
 }
 
 fn set_processing_style(spinner: &ProgressBar, detail: &str) {
-    set_spinner_msg(
-        spinner,
-        format!(
-            "{}  {}  {}",
-            style("◌").cyan(),
-            style("Processing").cyan().bold(),
-            style(detail).dim(),
-        ),
-    );
+    let msg = format!("{BRAND_LIGHT}{BOLD}◐{RESET}  {BRAND_LIGHT}{BOLD}{detail}{RESET}",);
+    set_spinner_msg(spinner, msg);
 }
 
 fn set_done_style(spinner: &ProgressBar, text: &str, stt_ms: &str, llm_ms: Option<&str>) {
-    let latency = match llm_ms {
-        Some(l) => format!("{}ms STT  ·  {}ms LLM", stt_ms, l),
-        None => format!("{}ms STT", stt_ms),
-    };
     let display = if text.len() > 60 {
         format!("{}…", &text[..59])
     } else {
         text.to_string()
     };
-    set_spinner_msg(
-        spinner,
-        format!(
-            "{}  \"{}\"  {}",
-            style("✓").green().bold(),
-            style(&display).white(),
-            style(format!("({})", latency)).dim(),
-        ),
+    let stt_num: u64 = stt_ms.parse().unwrap_or(0);
+    let llm_num: u64 = llm_ms.and_then(|s| s.parse().ok()).unwrap_or(0);
+    let total = stt_num + llm_num;
+    let dot_color = latency_color(total);
+    let lat = match llm_ms {
+        Some(l) => format!("{stt_ms}ms STT {sep} {l}ms LLM", sep = sep()),
+        None => format!("{stt_ms}ms STT"),
+    };
+    let msg = format!(
+        "{OK}{BOLD}✓{RESET}  {CREAM}{}{RESET}  {sep}  {dot_color}●{RESET} {DIM}{}{RESET}",
+        display,
+        lat,
+        sep = sep()
     );
+    set_spinner_msg(spinner, msg);
 }
 
 fn set_error_style(spinner: &ProgressBar, msg: &str) {
     let short = if msg.len() > 70 { &msg[..70] } else { msg };
-    set_spinner_msg(
-        spinner,
-        format!(
-            "{}  {}  {}",
-            style("✗").red().bold(),
-            style("Error").red().bold(),
-            style(short).red().dim(),
-        ),
+    let line = format!(
+        "{SLOW}{BOLD}✗{RESET}  {SLOW}{}{RESET}  {sep}  {DIM}hold {RESET}{CREAM}{BOLD}⌥Space{RESET}{DIM} to retry{RESET}",
+        short,
+        sep = sep()
     );
+    set_spinner_msg(spinner, line);
 }
 
 // ── Tracing → UI layer ───────────────────────────────────────────────────────
@@ -1722,6 +1743,8 @@ where
 
         if msg.contains("recording started") {
             self.on_recording_started();
+        } else if msg.contains("no speech detected") {
+            self.on_error("no speech detected — speak louder or lower vad_threshold in config");
         } else if msg.contains("recording stopped") {
             self.on_recording_stopped();
         } else if msg.contains("received audio segment") {
